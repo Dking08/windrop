@@ -19,14 +19,18 @@ HRESULT STDMETHODCALLTYPE CDropSource::QueryContinueDrag(BOOL fEscapePressed, DW
 {
     (void)grfKeyState;
 
-    if (fEscapePressed || (m_shouldCancel && *m_shouldCancel))
-        return DRAGDROP_S_CANCEL;
-
+    // Drop flag is checked FIRST because we use PostThreadMessage with
+    // VK_ESCAPE to trigger this call — fEscapePressed will be TRUE even
+    // when the user pressed F8 to drop. The flag distinguishes them.
     if (m_shouldDrop && *m_shouldDrop)
         return DRAGDROP_S_DROP;
 
-    // Keep drag alive — we do NOT check MK_LBUTTON because there is no
-    // physical mouse button held. The drag continues until F8 or Escape.
+    // Cancel: either via the injected VK_ESCAPE (with g_shouldCancel set)
+    // or via a real Escape press that somehow reached DoDragDrop.
+    if ((m_shouldCancel && *m_shouldCancel) || fEscapePressed)
+        return DRAGDROP_S_CANCEL;
+
+    // Keep drag alive.
     return S_OK;
 }
 
