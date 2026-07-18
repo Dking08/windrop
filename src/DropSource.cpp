@@ -18,10 +18,11 @@ ULONG STDMETHODCALLTYPE CDropSource::Release() { ULONG r = --m_refCount; if (!r)
 
 HRESULT STDMETHODCALLTYPE CDropSource::QueryContinueDrag(BOOL fEscapePressed, DWORD grfKeyState)
 {
-    fwprintf(stderr, L"[debug] QueryContinueDrag: esc=%d keystate=0x%08lX shouldDrop=%d shouldCancel=%d\n",
-             fEscapePressed, (unsigned long)grfKeyState,
-             m_shouldDrop ? (int)*m_shouldDrop : -1,
-             m_shouldCancel ? (int)*m_shouldCancel : -1);
+    // debug time
+    //fwprintf(stderr, L"[debug] QueryContinueDrag: esc=%d keystate=0x%08lX shouldDrop=%d shouldCancel=%d\n",
+    //         fEscapePressed, (unsigned long)grfKeyState,
+    //         m_shouldDrop ? (int)*m_shouldDrop : -1,
+    //         m_shouldCancel ? (int)*m_shouldCancel : -1);
 
     // Drop flag is checked FIRST because we use PostThreadMessage with
     // VK_ESCAPE to trigger this call — fEscapePressed will be TRUE even

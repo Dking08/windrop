@@ -326,8 +326,9 @@ int wmain(int argc, wchar_t* argv[])
         }
 
         hr = g_dragResult;
-        fwprintf(stderr, L"[debug] DoDragDrop returned 0x%08lX, effect=0x%lX\n",
-                 (unsigned long)hr, (unsigned long)g_dwEffect);
+        // debug time
+        //fwprintf(stderr, L"[debug] DoDragDrop returned 0x%08lX, effect=0x%lX\n",
+        //         (unsigned long)hr, (unsigned long)g_dwEffect);
         if      (hr == DRAGDROP_S_DROP)   { wprintf(L"Drop completed.\n"); exitCode = EXIT_OK; }
         else if (hr == DRAGDROP_S_CANCEL) { wprintf(L"Drag canceled.\n");  exitCode = EXIT_CANCELLED; }
         else { fwprintf(stderr, L"DoDragDrop=0x%08lX\n", (unsigned long)hr); exitCode = EXIT_COM_ERROR; }
