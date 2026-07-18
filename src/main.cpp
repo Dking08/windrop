@@ -46,6 +46,43 @@ static IDropSource* g_pDropSrc = nullptr;
 static HRESULT      g_dragResult = E_FAIL;
 static DWORD        g_dwEffect   = 0;
 
+// ── Jiggle thread ──
+//
+// Evidence from real runs: DoDragDrop always returns DRAGDROP_S_DROP when
+// F8 is pressed (our keyboard trigger works every time) but the reported
+// effect is DROPEFFECT_NONE (rejected) whenever QueryContinueDrag was only
+// called once — i.e. whenever the cursor didn't move between arming the
+// drag and pressing F8. Many drop targets (Explorer, and especially
+// Electron/Chromium apps like VS Code/Discord/Slack) only "arm" their
+// accept state after receiving at least one real DragOver; if the mouse
+// never moves, they never get one and refuse the final drop even though
+// our side completes normally.
+//
+// This thread generates small relative mouse-move input (NOT button
+// clicks — that caused a bad regression last time) for the duration of
+// the drag, so a DragOver keeps landing on the target even if the user's
+// hand is holding still. It runs on its own thread because the main
+// thread is blocked inside DoDragDrop for the whole drag.
+static HANDLE        g_jiggleThread = nullptr;
+static volatile bool g_jiggleStop   = false;
+
+static DWORD WINAPI JiggleThreadProc(LPVOID)
+{
+    bool toggle = false;
+    while (!g_jiggleStop && g_isDragging)
+    {
+        INPUT input   = {};
+        input.type    = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE; // relative move, no buttons
+        input.mi.dx   = toggle ? 1 : -1;
+        input.mi.dy   = 0;
+        SendInput(1, &input, sizeof(INPUT));
+        toggle = !toggle;
+        Sleep(120);
+    }
+    return 0;
+}
+
 // ── LL keyboard hook ──
 //
 // KEY INSIGHT from ReactOS/Wine DoDragDrop source code:
@@ -102,6 +139,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             if (kb->vkCode == VK_F8)
             {
                 g_shouldDrop = true;
+                OutputDebugStringW(L"[drag] F8 detected mid-drag, injecting drop signal\n");
                 // Inject a WM_KEYDOWN into our thread's message queue.
                 // DoDragDrop's GetMessageW will pick this up and call
                 // QueryContinueDrag, which checks g_shouldDrop.
@@ -260,6 +298,11 @@ int wmain(int argc, wchar_t* argv[])
 
         DragImage::AttachShellImage(hwnd, files, g_pDataObj);
 
+        // Start the jiggle thread so DragOver keeps refreshing on the
+        // target throughout the drag, even if the user's hand is still.
+        g_jiggleStop = false;
+        g_jiggleThread = CreateThread(nullptr, 0, JiggleThreadProc, nullptr, 0, nullptr);
+
         // Trigger DoDragDrop via a posted message so it runs inside
         // DispatchMessage on our thread — the proper context.
         PostMessageW(hwnd, WM_START_DRAG, 0, 0);
@@ -273,7 +316,18 @@ int wmain(int argc, wchar_t* argv[])
 
         g_isDragging = false;
 
+        // Stop the jiggle thread cleanly before reading the result.
+        g_jiggleStop = true;
+        if (g_jiggleThread)
+        {
+            WaitForSingleObject(g_jiggleThread, 1000);
+            CloseHandle(g_jiggleThread);
+            g_jiggleThread = nullptr;
+        }
+
         hr = g_dragResult;
+        fwprintf(stderr, L"[debug] DoDragDrop returned 0x%08lX, effect=0x%lX\n",
+                 (unsigned long)hr, (unsigned long)g_dwEffect);
         if      (hr == DRAGDROP_S_DROP)   { wprintf(L"Drop completed.\n"); exitCode = EXIT_OK; }
         else if (hr == DRAGDROP_S_CANCEL) { wprintf(L"Drag canceled.\n");  exitCode = EXIT_CANCELLED; }
         else { fwprintf(stderr, L"DoDragDrop=0x%08lX\n", (unsigned long)hr); exitCode = EXIT_COM_ERROR; }

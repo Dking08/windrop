@@ -184,20 +184,46 @@ HRESULT STDMETHODCALLTYPE CDataObject::GetData(FORMATETC* pfe, STGMEDIUM* pmed)
             (sm.fmt.tymed & pfe->tymed) &&
             sm.fmt.dwAspect == pfe->dwAspect)
         {
-            // Duplicate the stored medium for the caller
+            // Duplicate the stored medium for the caller. Handing back the
+            // exact same handle/pointer we still own (without duplicating
+            // or AddRef'ing it) would mean both our destructor's
+            // ReleaseStgMedium and the caller's eventual release free the
+            // same object — a double-free / use-after-free. tymed
+            // determines the correct way to make the copy safe.
             pmed->tymed = sm.med.tymed;
             pmed->pUnkForRelease = nullptr;
 
-            if (sm.med.tymed == TYMED_HGLOBAL)
+            switch (sm.med.tymed)
             {
+            case TYMED_HGLOBAL:
                 pmed->hGlobal = DuplicateHGlobal(sm.med.hGlobal);
                 return pmed->hGlobal ? S_OK : E_OUTOFMEMORY;
+
+            case TYMED_ISTREAM:
+                pmed->pstm = sm.med.pstm;
+                if (pmed->pstm) pmed->pstm->AddRef();
+                return S_OK;
+
+            case TYMED_ISTORAGE:
+                pmed->pstg = sm.med.pstg;
+                if (pmed->pstg) pmed->pstg->AddRef();
+                return S_OK;
+
+            default:
+                // Raw GDI/metafile handles (TYMED_GDI, TYMED_MFPICT,
+                // TYMED_ENHMF) aren't refcounted and can't be safely
+                // duplicated here. Only share them as-is if the medium
+                // came with its own pUnkForRelease (the caller relies on
+                // that, not on the raw handle, to manage lifetime);
+                // otherwise refuse rather than risk an unsafe alias.
+                if (sm.med.pUnkForRelease)
+                {
+                    *pmed = sm.med;
+                    pmed->pUnkForRelease->AddRef();
+                    return S_OK;
+                }
+                return DATA_E_FORMATETC;
             }
-            // For other storage types, just copy the pointer and AddRef
-            *pmed = sm.med;
-            if (pmed->pUnkForRelease)
-                pmed->pUnkForRelease->AddRef();
-            return S_OK;
         }
     }
 
