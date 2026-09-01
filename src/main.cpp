@@ -1,7 +1,7 @@
 // drag.exe — CLI-initiated Windows drag-and-drop
 //
 // Usage:  drag <file1> [file2 ...]
-// Flow:   F8 → drag starts → move cursor → F8 → drop
+// Flow:   drag starts immediately → move cursor → F8 (or Left Click) → drop
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -33,86 +33,99 @@ static constexpr int EXIT_CANCELLED    = 3;
 static constexpr int EXIT_COM_ERROR    = 4;
 
 // ── Shared state ──
-enum class TriggerState { Waiting, Go, Abort };
-static volatile TriggerState g_trigger      = TriggerState::Waiting;
-static volatile bool         g_isDragging   = false;
-static volatile bool         g_shouldDrop   = false;
-static volatile bool         g_shouldCancel = false;
-static DWORD                 g_mainThreadId = 0;
+static volatile bool g_isDragging   = false;
+static volatile bool g_shouldDrop   = false;
+static volatile bool g_shouldCancel = false;
+static volatile bool g_workerStop   = false;
+static DWORD         g_mainThreadId = 0;
 
-// Forward declaration — DoDragDrop is called from inside WndProc
-static IDataObject* g_pDataObj = nullptr;
-static IDropSource* g_pDropSrc = nullptr;
-static HRESULT      g_dragResult = E_FAIL;
-static DWORD        g_dwEffect   = 0;
+static void TriggerDrop()
+{
+    g_shouldDrop = true;
+    if (g_mainThreadId)
+        PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
 
-// ── Jiggle thread ──
+    // Stir mouse queue
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[0].mi.dx = 1;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[1].mi.dx = -1;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+static void TriggerCancel()
+{
+    g_shouldCancel = true;
+    if (g_mainThreadId)
+        PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
+
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[0].mi.dx = 1;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[1].mi.dx = -1;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+// ── Background monitor thread ──
 //
-// Evidence from real runs: DoDragDrop always returns DRAGDROP_S_DROP when
-// F8 is pressed (our keyboard trigger works every time) but the reported
-// effect is DROPEFFECT_NONE (rejected) whenever QueryContinueDrag was only
-// called once — i.e. whenever the cursor didn't move between arming the
-// drag and pressing F8. Many drop targets (Explorer, and especially
-// Electron/Chromium apps like VS Code/Discord/Slack) only "arm" their
-// accept state after receiving at least one real DragOver; if the mouse
-// never moves, they never get one and refuse the final drop even though
-// our side completes normally.
-//
-// This thread generates small relative mouse-move input (NOT button
-// clicks — that caused a bad regression last time) for the duration of
-// the drag, so a DragOver keeps landing on the target even if the user's
-// hand is holding still. It runs on its own thread because the main
-// thread is blocked inside DoDragDrop for the whole drag.
-static HANDLE        g_jiggleThread = nullptr;
-static volatile bool g_jiggleStop   = false;
-
-static DWORD WINAPI JiggleThreadProc(LPVOID)
+// 1. Sends micro relative mouse moves to keep drop targets (Explorer, Chrome,
+//    Electron apps) continuously primed with DragOver events even when motionless.
+// 2. Polls physical key and mouse states as a fail-safe fallback in case Windows
+//    silently unhooks the low-level hook due to timeouts.
+static DWORD WINAPI DragMonitorThreadProc(LPVOID)
 {
     bool toggle = false;
-    while (!g_jiggleStop && g_isDragging)
+    bool lbuttonSeen = false;
+    int tick = 0;
+    while (!g_workerStop && g_isDragging)
     {
-        INPUT input   = {};
-        input.type    = INPUT_MOUSE;
-        input.mi.dwFlags = MOUSEEVENTF_MOVE; // relative move, no buttons
-        input.mi.dx   = toggle ? 1 : -1;
-        input.mi.dy   = 0;
-        SendInput(1, &input, sizeof(INPUT));
-        toggle = !toggle;
-        Sleep(120);
+        // High-frequency polling (every 15ms)
+        if ((GetAsyncKeyState(VK_F8) & 0x8000) || (GetAsyncKeyState(VK_F8) & 0x0001) ||
+            (GetAsyncKeyState(VK_RETURN) & 0x8000))
+        {
+            TriggerDrop();
+        }
+        else if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) || (GetAsyncKeyState(VK_ESCAPE) & 0x0001))
+        {
+            TriggerCancel();
+        }
+
+        // Track left mouse button release
+        bool lbtnDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        if (lbtnDown)
+        {
+            lbuttonSeen = true;
+        }
+        else if (lbuttonSeen)
+        {
+            lbuttonSeen = false;
+            TriggerDrop();
+        }
+
+        // Send mouse jiggle every ~90ms (every 6 ticks)
+        if (++tick % 6 == 0)
+        {
+            INPUT input = {};
+            input.type = INPUT_MOUSE;
+            input.mi.dwFlags = MOUSEEVENTF_MOVE;
+            input.mi.dx = toggle ? 1 : -1;
+            input.mi.dy = 0;
+            SendInput(1, &input, sizeof(INPUT));
+            toggle = !toggle;
+        }
+
+        Sleep(15);
     }
     return 0;
 }
 
-// ── LL keyboard hook ──
-//
-// KEY INSIGHT from ReactOS/Wine DoDragDrop source code:
-//
-// DoDragDrop internally runs:
-//   while (!done && GetMessageW(&msg, 0, 0, 0)) {
-//       if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST) {
-//           if (msg.wParam == VK_ESCAPE) escPressed = TRUE;
-//           OLEDD_TrackStateChange();  // ← calls QueryContinueDrag
-//       } else {
-//           DispatchMessageW(&msg);    // handles WM_MOUSEMOVE etc
-//       }
-//   }
-//
-// QueryContinueDrag is ONLY called when a keyboard message arrives in
-// the thread's message queue. Mouse moves do NOT trigger it.
-//
-// Our LL hook fires BEFORE the message reaches any queue. If we return 1
-// (swallow), the WM_KEYDOWN never enters our thread's queue, and
-// DoDragDrop never calls QueryContinueDrag.
-//
-// FIX: When F8 is pressed during drag, we:
-//   1. Set g_shouldDrop = true
-//   2. PostThreadMessage(WM_KEYDOWN, VK_ESCAPE) to our own thread
-//      This injects a keyboard message into the queue that DoDragDrop's
-//      GetMessageW will pick up, triggering QueryContinueDrag.
-//   3. QueryContinueDrag checks g_shouldDrop FIRST → returns DRAGDROP_S_DROP
-//
-// For Escape: same pattern but sets g_shouldCancel instead.
-//
+// ── Low-level keyboard hook ──
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION &&
@@ -120,58 +133,30 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
     {
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
-        if (!g_isDragging)
+        if (g_isDragging)
         {
-            // Phase 1: waiting for user to press F8 to start
-            if (g_trigger == TriggerState::Waiting)
+            if (kb->vkCode == VK_F8 || kb->vkCode == VK_RETURN)
             {
-                if (kb->vkCode == VK_F8)
-                { g_trigger = TriggerState::Go; PostQuitMessage(0); return 1; }
-                if (kb->vkCode == VK_ESCAPE)
-                { g_trigger = TriggerState::Abort; PostQuitMessage(0); return 1; }
-            }
-            // Between phases: just swallow F8 silently
-            if (kb->vkCode == VK_F8) return 1;
-        }
-        else
-        {
-            // Phase 2: drag is active
-            if (kb->vkCode == VK_F8)
-            {
-                g_shouldDrop = true;
-                // Inject a WM_KEYDOWN into our thread's message queue.
-                // DoDragDrop's GetMessageW will pick this up and call
-                // QueryContinueDrag, which checks g_shouldDrop.
-                PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
-                return 1; // swallow the real F8
+                TriggerDrop();
+                return 1; // swallow F8 / Enter
             }
             if (kb->vkCode == VK_ESCAPE)
             {
-                g_shouldCancel = true;
-                // Same trick: inject WM_KEYDOWN so DoDragDrop calls
-                // QueryContinueDrag where we check g_shouldCancel.
-                PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
-                return 1; // swallow the real Escape
+                TriggerCancel();
+                return 1; // swallow Escape
             }
         }
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
 
-// ── Custom message to trigger the drag from WndProc context ──
-#define WM_START_DRAG (WM_APP + 1)
-
+// ── Helper window for OLE mouse capture ──
 static const wchar_t* kWindowClassName = L"DragUtilityHelperWnd";
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    if (msg == WM_START_DRAG)
-    {
-        DWORD dwOK = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
-        g_dragResult = DoDragDrop(g_pDataObj, g_pDropSrc, dwOK, &g_dwEffect);
-        PostQuitMessage(0);
-        return 0;
-    }
+    if (msg == WM_NCHITTEST)
+        return HTTRANSPARENT; // Mouse hit-tests pass straight through to target app beneath
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
@@ -185,14 +170,17 @@ static HWND CreateHelperWindow(HINSTANCE hInst)
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
         kWindowClassName, L"",
         WS_POPUP,
         0, 0, 1, 1,
         nullptr, nullptr, hInst, nullptr);
 
     if (hwnd)
-        SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA);
+    {
+        SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA); // Completely invisible
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
     return hwnd;
 }
 
@@ -201,7 +189,12 @@ int wmain(int argc, wchar_t* argv[])
 {
     if (argc < 2) { Utils::PrintUsage(); return EXIT_BAD_ARGS; }
 
-    g_mainThreadId = GetCurrentThreadId();
+    // Enable Per-Monitor V2 DPI awareness if available
+    typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
+    auto pfnSetDpi = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
+    if (pfnSetDpi)
+        pfnSetDpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     std::vector<std::wstring> rawArgs;
     for (int i = 1; i < argc; ++i)
@@ -215,127 +208,115 @@ int wmain(int argc, wchar_t* argv[])
     if (!missing.empty()) return EXIT_FILE_MISSING;
     if (files.empty())    { Utils::PrintUsage(); return EXIT_BAD_ARGS; }
 
-    fwprintf(stderr, L"Ready to drag %zu file(s):\n", files.size());
-    for (const auto& f : files)
-        fwprintf(stderr, L"  %s\n", f.c_str());
-    fwprintf(stderr, L"\n");
-
-    // ── Install LL keyboard hook (stays for entire lifetime) ──
-    HHOOK hHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
-                                     GetModuleHandleW(nullptr), 0);
-    if (!hHook)
-    {
-        fwprintf(stderr, L"ERROR: SetWindowsHookEx failed (%lu)\n", GetLastError());
-        return EXIT_COM_ERROR;
-    }
-
-    // ── Phase 1: wait for F8 ──
-    fwprintf(stderr, L"Hover cursor over the drop target, then press F8 to drag.\n");
-    fwprintf(stderr, L"Press Escape to abort.\n");
-    fflush(stderr);
-
-    MSG msg = {};
-    while (GetMessageW(&msg, nullptr, 0, 0))
-    { TranslateMessage(&msg); DispatchMessageW(&msg); }
-
-    if (g_trigger != TriggerState::Go)
-    {
-        UnhookWindowsHookEx(hHook);
-        fwprintf(stderr, L"Aborted.\n");
-        return EXIT_CANCELLED;
-    }
-
-    // Immediately enter dragging phase to close the state machine gap
-    g_isDragging = true;
-
-    // Wait for F8 to be physically released (debounce)
-    while (GetAsyncKeyState(VK_F8) & 0x8000) Sleep(10);
-    Sleep(100);
-
-    // Reset flags — any F8 presses during debounce are discarded
-    g_shouldDrop   = false;
-    g_shouldCancel = false;
-
-    // Drain stale messages
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {}
-
-    // ── Phase 2: OLE drag ──
-    fwprintf(stderr, L"\nDragging... move cursor to target and press F8 to drop.\n");
-    fwprintf(stderr, L"Press Escape to cancel.\n");
-    fflush(stderr);
-
     HRESULT hr = OleInitialize(nullptr);
     if (FAILED(hr))
     {
-        UnhookWindowsHookEx(hHook);
         Utils::PrintError(L"OleInitialize failed");
         return EXIT_COM_ERROR;
     }
 
-    int exitCode = EXIT_COM_ERROR;
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HWND hwndHelper = CreateHelperWindow(hInst);
+
+    // Wait for any prior F8 keypress to be physically released
+    while (GetAsyncKeyState(VK_F8) & 0x8000) Sleep(10);
+
+    g_mainThreadId = GetCurrentThreadId();
+    g_shouldDrop   = false;
+    g_shouldCancel = false;
+    g_workerStop   = false;
+    g_isDragging   = true;
+
+    // Install LL keyboard hook
+    HHOOK hHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+                                     hInst, 0);
+    if (!hHook)
     {
-        HINSTANCE hInst = GetModuleHandleW(nullptr);
-        HWND hwnd = CreateHelperWindow(hInst);
-        if (!hwnd) { OleUninitialize(); UnhookWindowsHookEx(hHook); return EXIT_COM_ERROR; }
-
-        // Position at cursor and show
-        POINT pt = {};
-        GetCursorPos(&pt);
-        SetWindowPos(hwnd, HWND_TOPMOST, pt.x, pt.y, 1, 1,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-
-        g_pDataObj = new (std::nothrow) CDataObject(files);
-        g_pDropSrc = new (std::nothrow) CDropSource(&g_shouldDrop, &g_shouldCancel);
-        if (!g_pDataObj || !g_pDropSrc)
-        {
-            if (g_pDataObj) g_pDataObj->Release();
-            if (g_pDropSrc) g_pDropSrc->Release();
-            DestroyWindow(hwnd); OleUninitialize(); UnhookWindowsHookEx(hHook);
-            return EXIT_COM_ERROR;
-        }
-
-        DragImage::AttachShellImage(hwnd, files, g_pDataObj);
-
-        // Start the jiggle thread so DragOver keeps refreshing on the
-        // target throughout the drag, even if the user's hand is still.
-        g_jiggleStop = false;
-        g_jiggleThread = CreateThread(nullptr, 0, JiggleThreadProc, nullptr, 0, nullptr);
-
-        // Trigger DoDragDrop via a posted message so it runs inside
-        // DispatchMessage on our thread — the proper context.
-        PostMessageW(hwnd, WM_START_DRAG, 0, 0);
-
-        // Run message loop — DoDragDrop blocks inside WM_START_DRAG.
-        // Our LL hook fires and uses PostThreadMessage to inject
-        // WM_KEYDOWN into this thread's queue, which DoDragDrop's
-        // internal GetMessageW picks up.
-        while (GetMessageW(&msg, nullptr, 0, 0))
-        { TranslateMessage(&msg); DispatchMessageW(&msg); }
-
-        g_isDragging = false;
-
-        // Stop the jiggle thread cleanly before reading the result.
-        g_jiggleStop = true;
-        if (g_jiggleThread)
-        {
-            WaitForSingleObject(g_jiggleThread, 1000);
-            CloseHandle(g_jiggleThread);
-            g_jiggleThread = nullptr;
-        }
-
-        hr = g_dragResult;
-        if      (hr == DRAGDROP_S_DROP)   { wprintf(L"Drop completed.\n"); exitCode = EXIT_OK; }
-        else if (hr == DRAGDROP_S_CANCEL) { wprintf(L"Drag canceled.\n");  exitCode = EXIT_CANCELLED; }
-        else { fwprintf(stderr, L"DoDragDrop=0x%08lX\n", (unsigned long)hr); exitCode = EXIT_COM_ERROR; }
-
-        g_pDropSrc->Release();
-        g_pDataObj->Release();
-        DestroyWindow(hwnd);
-        UnregisterClassW(kWindowClassName, hInst);
+        fwprintf(stderr, L"Warning: SetWindowsHookEx failed (%lu), using polling fallback.\n", GetLastError());
     }
 
+    // Start background monitor / jiggle thread
+    HANDLE hThread = CreateThread(nullptr, 0, DragMonitorThreadProc, nullptr, 0, nullptr);
+
+    auto* pDataObj = new (std::nothrow) CDataObject(files);
+    auto* pDropSrc = new (std::nothrow) CDropSource(&g_shouldDrop, &g_shouldCancel);
+
+    int exitCode = EXIT_COM_ERROR;
+
+    if (pDataObj && pDropSrc)
+    {
+        DragImage::AttachShellImage(nullptr, files, pDataObj);
+
+        fwprintf(stderr, L"Dragging %zu file(s)... Move cursor over target and press F8 (or Left Click) to drop.\n", files.size());
+        for (const auto& f : files)
+            fwprintf(stderr, L"  %s\n", f.c_str());
+        fwprintf(stderr, L"Press Escape to cancel.\n\n");
+        fflush(stderr);
+
+        DWORD dwEffect = 0;
+        DWORD dwOK = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+
+        hr = DoDragDrop(pDataObj, pDropSrc, dwOK, &dwEffect);
+
+        if (hr == DRAGDROP_S_DROP)
+        {
+            if (dwEffect == DROPEFFECT_NONE)
+            {
+                wprintf(L"Drop rejected by target.\n");
+                exitCode = EXIT_CANCELLED;
+            }
+            else if (dwEffect & DROPEFFECT_MOVE)
+            {
+                wprintf(L"Drop completed (Move).\n");
+                exitCode = EXIT_OK;
+            }
+            else if (dwEffect & DROPEFFECT_COPY)
+            {
+                wprintf(L"Drop completed (Copy).\n");
+                exitCode = EXIT_OK;
+            }
+            else
+            {
+                wprintf(L"Drop completed.\n");
+                exitCode = EXIT_OK;
+            }
+        }
+        else if (hr == DRAGDROP_S_CANCEL)
+        {
+            wprintf(L"Drag canceled.\n");
+            exitCode = EXIT_CANCELLED;
+        }
+        else
+        {
+            fwprintf(stderr, L"DoDragDrop failed (0x%08lX)\n", (unsigned long)hr);
+            exitCode = EXIT_COM_ERROR;
+        }
+    }
+    else
+    {
+        Utils::PrintError(L"Out of memory allocating COM objects");
+    }
+
+    g_isDragging = false;
+    g_workerStop = true;
+
+    if (hThread)
+    {
+        WaitForSingleObject(hThread, 1000);
+        CloseHandle(hThread);
+    }
+
+    if (pDropSrc) pDropSrc->Release();
+    if (pDataObj) pDataObj->Release();
+
+    if (hHook)
+        UnhookWindowsHookEx(hHook);
+
+    if (hwndHelper)
+        DestroyWindow(hwndHelper);
+
+    UnregisterClassW(kWindowClassName, hInst);
+
     OleUninitialize();
-    UnhookWindowsHookEx(hHook);
     return exitCode;
 }

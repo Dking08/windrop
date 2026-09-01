@@ -49,9 +49,12 @@ public:
     HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**)                                   override { return OLE_E_ADVISENOTSUPPORTED; }
 
 private:
-    // Build the HGLOBAL containing the DROPFILES structure for our file list.
-    // Returns NULL on allocation failure.
     HGLOBAL BuildHDrop() const;
+    HGLOBAL BuildPreferredDropEffect() const;
+    HGLOBAL BuildUnicodeText() const;
+    HGLOBAL BuildAnsiText() const;
+    HGLOBAL BuildShellUrl() const;
+    HGLOBAL BuildFileNameW() const;
 
     // Storage for formats set via SetData (drag image, drop descriptions, etc.)
     struct StoredMedium

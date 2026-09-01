@@ -17,8 +17,6 @@ ULONG STDMETHODCALLTYPE CDropSource::Release() { ULONG r = --m_refCount; if (!r)
 
 HRESULT STDMETHODCALLTYPE CDropSource::QueryContinueDrag(BOOL fEscapePressed, DWORD grfKeyState)
 {
-    (void)grfKeyState;
-
     // Drop flag is checked FIRST because we use PostThreadMessage with
     // VK_ESCAPE to trigger this call — fEscapePressed will be TRUE even
     // when the user pressed F8 to drop. The flag distinguishes them.
@@ -26,11 +24,20 @@ HRESULT STDMETHODCALLTYPE CDropSource::QueryContinueDrag(BOOL fEscapePressed, DW
         return DRAGDROP_S_DROP;
 
     // Cancel: either via the injected VK_ESCAPE (with g_shouldCancel set)
-    // or via a real Escape press that somehow reached DoDragDrop.
-    if ((m_shouldCancel && *m_shouldCancel) || fEscapePressed)
+    // or via a real Escape press.
+    if ((m_shouldCancel && *m_shouldCancel) || fEscapePressed || (GetAsyncKeyState(VK_ESCAPE) & 0x8000))
         return DRAGDROP_S_CANCEL;
 
-    // Keep drag alive.
+    if (grfKeyState & MK_LBUTTON)
+    {
+        m_lbuttonDown = true;
+    }
+    else if (m_lbuttonDown)
+    {
+        // Left button was pressed during drag and is now released -> complete drop
+        return DRAGDROP_S_DROP;
+    }
+
     return S_OK;
 }
 
