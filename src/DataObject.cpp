@@ -114,25 +114,26 @@ ULONG STDMETHODCALLTYPE CDataObject::Release()
 }
 
 // ---------------------------------------------------------------------------
+// Registered shell clipboard formats
+// ---------------------------------------------------------------------------
+static const UINT g_cfPreferredDropEffect = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+static const UINT g_cfShellUrlW           = RegisterClipboardFormatW(CFSTR_SHELLURL);
+static const UINT g_cfFileNameW           = RegisterClipboardFormatW(CFSTR_FILENAMEW);
+static const UINT g_cfFileNameA           = RegisterClipboardFormatW(CFSTR_FILENAMEA);
+
+// ---------------------------------------------------------------------------
 // BuildHDrop
 //
 // Layout of HGLOBAL for CF_HDROP:
-//
 //   [DROPFILES header]
 //   [wchar_t* path1 \0]
 //   [wchar_t* path2 \0]
 //   ...
 //   [wchar_t* pathN \0]
 //   [\0]               ← extra terminator (double-null)
-//
-// The DROPFILES.pFiles field is the byte offset from the start of the
-// allocation to the first path character.
-// DROPFILES.fWide = TRUE means the path list is Unicode (UTF-16).
 // ---------------------------------------------------------------------------
 HGLOBAL CDataObject::BuildHDrop() const
 {
-    // Calculate the total number of wchar_t characters needed for all paths
-    // (each path is NUL-terminated, plus one final NUL).
     size_t pathChars = 1; // final double-NUL
     for (const auto& f : m_files)
         pathChars += f.size() + 1;
@@ -146,12 +147,11 @@ HGLOBAL CDataObject::BuildHDrop() const
     auto* pDrop = static_cast<DROPFILES*>(GlobalLock(hGlobal));
     if (!pDrop) { GlobalFree(hGlobal); return nullptr; }
 
-    pDrop->pFiles = static_cast<DWORD>(headerSize); // offset to first path
+    pDrop->pFiles = static_cast<DWORD>(headerSize);
     pDrop->pt     = {0, 0};
     pDrop->fNC    = FALSE;
-    pDrop->fWide  = TRUE;  // UTF-16 paths
+    pDrop->fWide  = TRUE;
 
-    // Write paths after the header
     wchar_t* dest = reinterpret_cast<wchar_t*>(
         reinterpret_cast<BYTE*>(pDrop) + headerSize);
 
@@ -161,8 +161,132 @@ HGLOBAL CDataObject::BuildHDrop() const
         dest += f.size();
         *dest++ = L'\0';
     }
-    *dest = L'\0'; // final terminator
+    *dest = L'\0';
 
+    GlobalUnlock(hGlobal);
+    return hGlobal;
+}
+
+// ---------------------------------------------------------------------------
+// BuildPreferredDropEffect (CFSTR_PREFERREDDROPEFFECT)
+// Advertises that we support both Copy and Move operations.
+// ---------------------------------------------------------------------------
+HGLOBAL CDataObject::BuildPreferredDropEffect() const
+{
+    HGLOBAL hGlobal = GlobalAlloc(GHND | GMEM_SHARE, sizeof(DWORD));
+    if (!hGlobal) return nullptr;
+
+    auto* pData = static_cast<DWORD*>(GlobalLock(hGlobal));
+    if (!pData) { GlobalFree(hGlobal); return nullptr; }
+
+    *pData = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+    GlobalUnlock(hGlobal);
+    return hGlobal;
+}
+
+// ---------------------------------------------------------------------------
+// BuildUnicodeText (CF_UNICODETEXT)
+// Formatted paths separated by newlines for text boxes, search bars, editors.
+// ---------------------------------------------------------------------------
+HGLOBAL CDataObject::BuildUnicodeText() const
+{
+    if (m_files.empty()) return nullptr;
+
+    std::wstring text;
+    for (size_t i = 0; i < m_files.size(); ++i)
+    {
+        if (i > 0) text += L"\r\n";
+        text += m_files[i];
+    }
+
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlobal = GlobalAlloc(GHND | GMEM_SHARE, bytes);
+    if (!hGlobal) return nullptr;
+
+    void* p = GlobalLock(hGlobal);
+    if (!p) { GlobalFree(hGlobal); return nullptr; }
+
+    memcpy(p, text.c_str(), bytes);
+    GlobalUnlock(hGlobal);
+    return hGlobal;
+}
+
+// ---------------------------------------------------------------------------
+// BuildAnsiText (CF_TEXT)
+// ANSI fallback string.
+// ---------------------------------------------------------------------------
+HGLOBAL CDataObject::BuildAnsiText() const
+{
+    if (m_files.empty()) return nullptr;
+
+    std::string text;
+    for (size_t i = 0; i < m_files.size(); ++i)
+    {
+        if (i > 0) text += "\r\n";
+        int len = WideCharToMultiByte(CP_ACP, 0, m_files[i].c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (len > 1)
+        {
+            std::string s(len - 1, '\0');
+            WideCharToMultiByte(CP_ACP, 0, m_files[i].c_str(), -1, &s[0], len, nullptr, nullptr);
+            text += s;
+        }
+    }
+
+    size_t bytes = text.size() + 1;
+    HGLOBAL hGlobal = GlobalAlloc(GHND | GMEM_SHARE, bytes);
+    if (!hGlobal) return nullptr;
+
+    void* p = GlobalLock(hGlobal);
+    if (!p) { GlobalFree(hGlobal); return nullptr; }
+
+    memcpy(p, text.c_str(), bytes);
+    GlobalUnlock(hGlobal);
+    return hGlobal;
+}
+
+// ---------------------------------------------------------------------------
+// BuildShellUrl (UniformResourceLocatorW)
+// file:/// URL for browsers, Electron apps, and URL drops.
+// ---------------------------------------------------------------------------
+HGLOBAL CDataObject::BuildShellUrl() const
+{
+    if (m_files.empty()) return nullptr;
+
+    std::wstring url = L"file:///";
+    for (wchar_t ch : m_files[0])
+    {
+        if (ch == L'\\') url += L'/';
+        else url += ch;
+    }
+
+    size_t bytes = (url.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlobal = GlobalAlloc(GHND | GMEM_SHARE, bytes);
+    if (!hGlobal) return nullptr;
+
+    void* p = GlobalLock(hGlobal);
+    if (!p) { GlobalFree(hGlobal); return nullptr; }
+
+    memcpy(p, url.c_str(), bytes);
+    GlobalUnlock(hGlobal);
+    return hGlobal;
+}
+
+// ---------------------------------------------------------------------------
+// BuildFileNameW (FileNameW)
+// Single filename string for older drop targets.
+// ---------------------------------------------------------------------------
+HGLOBAL CDataObject::BuildFileNameW() const
+{
+    if (m_files.empty()) return nullptr;
+
+    size_t bytes = (m_files[0].size() + 1) * sizeof(wchar_t);
+    HGLOBAL hGlobal = GlobalAlloc(GHND | GMEM_SHARE, bytes);
+    if (!hGlobal) return nullptr;
+
+    void* p = GlobalLock(hGlobal);
+    if (!p) { GlobalFree(hGlobal); return nullptr; }
+
+    memcpy(p, m_files[0].c_str(), bytes);
     GlobalUnlock(hGlobal);
     return hGlobal;
 }
@@ -170,8 +294,8 @@ HGLOBAL CDataObject::BuildHDrop() const
 // ---------------------------------------------------------------------------
 // IDataObject::GetData
 //
-// The drop target calls this to retrieve the actual file data.
-// First checks stored data (from SetData), then handles CF_HDROP natively.
+// First checks stored data (drag image, drop descriptions, etc.),
+// then handles native formats (CF_HDROP, PreferredDropEffect, UnicodeText, etc.)
 // ---------------------------------------------------------------------------
 HRESULT STDMETHODCALLTYPE CDataObject::GetData(FORMATETC* pfe, STGMEDIUM* pmed)
 {
@@ -182,14 +306,8 @@ HRESULT STDMETHODCALLTYPE CDataObject::GetData(FORMATETC* pfe, STGMEDIUM* pmed)
     {
         if (sm.fmt.cfFormat == pfe->cfFormat &&
             (sm.fmt.tymed & pfe->tymed) &&
-            sm.fmt.dwAspect == pfe->dwAspect)
+            (sm.fmt.dwAspect == pfe->dwAspect || pfe->dwAspect == DVASPECT_CONTENT))
         {
-            // Duplicate the stored medium for the caller. Handing back the
-            // exact same handle/pointer we still own (without duplicating
-            // or AddRef'ing it) would mean both our destructor's
-            // ReleaseStgMedium and the caller's eventual release free the
-            // same object — a double-free / use-after-free. tymed
-            // determines the correct way to make the copy safe.
             pmed->tymed = sm.med.tymed;
             pmed->pUnkForRelease = nullptr;
 
@@ -210,12 +328,6 @@ HRESULT STDMETHODCALLTYPE CDataObject::GetData(FORMATETC* pfe, STGMEDIUM* pmed)
                 return S_OK;
 
             default:
-                // Raw GDI/metafile handles (TYMED_GDI, TYMED_MFPICT,
-                // TYMED_ENHMF) aren't refcounted and can't be safely
-                // duplicated here. Only share them as-is if the medium
-                // came with its own pUnkForRelease (the caller relies on
-                // that, not on the raw handle, to manage lifetime);
-                // otherwise refuse rather than risk an unsafe alias.
                 if (sm.med.pUnkForRelease)
                 {
                     *pmed = sm.med;
@@ -227,57 +339,83 @@ HRESULT STDMETHODCALLTYPE CDataObject::GetData(FORMATETC* pfe, STGMEDIUM* pmed)
         }
     }
 
-    // Native CF_HDROP handling
-    if (pfe->cfFormat != CF_HDROP)      return DATA_E_FORMATETC;
-    if (!(pfe->tymed & TYMED_HGLOBAL))  return DATA_E_FORMATETC;
-    if (pfe->dwAspect != DVASPECT_CONTENT) return DV_E_DVASPECT;
+    if (!(pfe->tymed & TYMED_HGLOBAL)) return DATA_E_FORMATETC;
 
-    HGLOBAL hDrop = BuildHDrop();
-    if (!hDrop) return E_OUTOFMEMORY;
+    HGLOBAL hData = nullptr;
+    if (pfe->cfFormat == CF_HDROP)
+    {
+        hData = BuildHDrop();
+    }
+    else if (g_cfPreferredDropEffect && pfe->cfFormat == g_cfPreferredDropEffect)
+    {
+        hData = BuildPreferredDropEffect();
+    }
+    else if (pfe->cfFormat == CF_UNICODETEXT)
+    {
+        hData = BuildUnicodeText();
+    }
+    else if (pfe->cfFormat == CF_TEXT)
+    {
+        hData = BuildAnsiText();
+    }
+    else if (g_cfShellUrlW && pfe->cfFormat == g_cfShellUrlW)
+    {
+        hData = BuildShellUrl();
+    }
+    else if (g_cfFileNameW && pfe->cfFormat == g_cfFileNameW)
+    {
+        hData = BuildFileNameW();
+    }
+    else
+    {
+        return DATA_E_FORMATETC;
+    }
+
+    if (!hData) return E_OUTOFMEMORY;
 
     pmed->tymed          = TYMED_HGLOBAL;
-    pmed->hGlobal        = hDrop;
-    pmed->pUnkForRelease = nullptr; // caller frees via ReleaseStgMedium
+    pmed->hGlobal        = hData;
+    pmed->pUnkForRelease = nullptr;
     return S_OK;
 }
 
 // ---------------------------------------------------------------------------
 // IDataObject::QueryGetData
-//
-// Returns S_OK if we can provide the requested format.
 // ---------------------------------------------------------------------------
 HRESULT STDMETHODCALLTYPE CDataObject::QueryGetData(FORMATETC* pfe)
 {
     if (!pfe) return E_POINTER;
 
-    // Check stored formats
     for (const auto& sm : m_storedData)
     {
         if (sm.fmt.cfFormat == pfe->cfFormat &&
             (sm.fmt.tymed & pfe->tymed) &&
-            sm.fmt.dwAspect == pfe->dwAspect)
+            (sm.fmt.dwAspect == pfe->dwAspect || pfe->dwAspect == DVASPECT_CONTENT))
             return S_OK;
     }
 
-    // Native CF_HDROP
-    if (pfe->cfFormat != CF_HDROP)    return DATA_E_FORMATETC;
     if (!(pfe->tymed & TYMED_HGLOBAL)) return DATA_E_FORMATETC;
-    if (pfe->dwAspect != DVASPECT_CONTENT) return DV_E_DVASPECT;
-    return S_OK;
+
+    if (pfe->cfFormat == CF_HDROP ||
+        (g_cfPreferredDropEffect && pfe->cfFormat == g_cfPreferredDropEffect) ||
+        pfe->cfFormat == CF_UNICODETEXT ||
+        pfe->cfFormat == CF_TEXT ||
+        (g_cfShellUrlW && pfe->cfFormat == g_cfShellUrlW) ||
+        (g_cfFileNameW && pfe->cfFormat == g_cfFileNameW))
+    {
+        return S_OK;
+    }
+
+    return DATA_E_FORMATETC;
 }
 
 // ---------------------------------------------------------------------------
 // IDataObject::SetData
-//
-// Accepts data from the shell drag image helper and drop targets.
-// If fRelease is TRUE, we take ownership of the medium.
-// If fRelease is FALSE, we duplicate the HGLOBAL.
 // ---------------------------------------------------------------------------
 HRESULT STDMETHODCALLTYPE CDataObject::SetData(FORMATETC* pfe, STGMEDIUM* pmed, BOOL fRelease)
 {
     if (!pfe || !pmed) return E_POINTER;
 
-    // Replace existing entry for the same format, or add new
     for (auto& sm : m_storedData)
     {
         if (sm.fmt.cfFormat == pfe->cfFormat &&
@@ -302,7 +440,6 @@ HRESULT STDMETHODCALLTYPE CDataObject::SetData(FORMATETC* pfe, STGMEDIUM* pmed, 
         }
     }
 
-    // New entry
     StoredMedium entry = {};
     entry.fmt = *pfe;
 
@@ -325,28 +462,35 @@ HRESULT STDMETHODCALLTYPE CDataObject::SetData(FORMATETC* pfe, STGMEDIUM* pmed, 
 
 // ---------------------------------------------------------------------------
 // IDataObject::EnumFormatEtc
-//
-// Direction DATADIR_GET: return an enumerator for our supported formats.
-// Direction DATADIR_SET: we don't accept data so return E_NOTIMPL.
 // ---------------------------------------------------------------------------
 HRESULT STDMETHODCALLTYPE CDataObject::EnumFormatEtc(DWORD dwDirection, IEnumFORMATETC** ppEnum)
 {
     if (!ppEnum) return E_POINTER;
     if (dwDirection != DATADIR_GET) return E_NOTIMPL;
 
-    // Build a list of all available formats
     std::vector<FORMATETC> fmts;
 
-    // Native CF_HDROP
-    FORMATETC fmtHDrop = {};
-    fmtHDrop.cfFormat = CF_HDROP;
-    fmtHDrop.ptd      = nullptr;
-    fmtHDrop.dwAspect = DVASPECT_CONTENT;
-    fmtHDrop.lindex   = -1;
-    fmtHDrop.tymed    = TYMED_HGLOBAL;
-    fmts.push_back(fmtHDrop);
+    auto addFormat = [&](CLIPFORMAT cf) {
+        if (!cf) return;
+        FORMATETC fe = {};
+        fe.cfFormat = cf;
+        fe.ptd      = nullptr;
+        fe.dwAspect = DVASPECT_CONTENT;
+        fe.lindex   = -1;
+        fe.tymed    = TYMED_HGLOBAL;
+        fmts.push_back(fe);
+    };
 
-    // All stored formats
+    addFormat(CF_HDROP);
+    if (g_cfPreferredDropEffect)
+        addFormat(static_cast<CLIPFORMAT>(g_cfPreferredDropEffect));
+    addFormat(CF_UNICODETEXT);
+    addFormat(CF_TEXT);
+    if (g_cfShellUrlW)
+        addFormat(static_cast<CLIPFORMAT>(g_cfShellUrlW));
+    if (g_cfFileNameW)
+        addFormat(static_cast<CLIPFORMAT>(g_cfFileNameW));
+
     for (const auto& sm : m_storedData)
         fmts.push_back(sm.fmt);
 

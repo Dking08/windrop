@@ -29,5 +29,6 @@ public:
 private:
     volatile bool* m_shouldDrop;
     volatile bool* m_shouldCancel;
+    bool m_lbuttonDown = false;
     std::atomic<ULONG> m_refCount{1};
 };
