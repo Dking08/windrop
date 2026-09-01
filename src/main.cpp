@@ -1,7 +1,7 @@
-// drag.exe — CLI-initiated Windows drag-and-drop
+// drag.exe — CLI-initiated Windows drag-and-drop utility (dragon/blobdrop for Windows)
 //
 // Usage:  drag <file1> [file2 ...]
-// Flow:   drag starts immediately → move cursor → F8 (or Left Click) → drop
+// Flow:   A sleek floating drag-card appears at cursor → Click & drag to any app → drop!
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -14,8 +14,10 @@
 #endif
 
 #include <windows.h>
+#include <windowsx.h>
 #include <objbase.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <ole2.h>
 #include <cstdio>
 #include <string>
@@ -32,156 +34,177 @@ static constexpr int EXIT_FILE_MISSING = 2;
 static constexpr int EXIT_CANCELLED    = 3;
 static constexpr int EXIT_COM_ERROR    = 4;
 
-// ── Shared state ──
-static volatile bool g_isDragging   = false;
-static volatile bool g_shouldDrop   = false;
-static volatile bool g_shouldCancel = false;
-static volatile bool g_workerStop   = false;
-static DWORD         g_mainThreadId = 0;
+static const wchar_t* kWindowClassName = L"DragPayloadCardWnd";
 
-static void TriggerDrop()
+struct DragPayloadState
 {
-    g_shouldDrop = true;
-    if (g_mainThreadId)
-        PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
+    std::vector<std::wstring> files;
+    CDataObject*              pDataObj = nullptr;
+    CDropSource*              pDropSrc = nullptr;
+    HICON                     hIcon    = nullptr;
+    std::wstring              displayTitle;
+    std::wstring              displaySubtitle;
+    int                       exitCode = EXIT_CANCELLED;
+};
 
-    // Stir mouse queue
-    INPUT inputs[2] = {};
-    inputs[0].type = INPUT_MOUSE;
-    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
-    inputs[0].mi.dx = 1;
-    inputs[1].type = INPUT_MOUSE;
-    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
-    inputs[1].mi.dx = -1;
-    SendInput(2, inputs, sizeof(INPUT));
-}
+static DragPayloadState* g_pState = nullptr;
 
-static void TriggerCancel()
+static void PerformDrag(HWND hwnd)
 {
-    g_shouldCancel = true;
-    if (g_mainThreadId)
-        PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
+    if (!g_pState || !g_pState->pDataObj || !g_pState->pDropSrc)
+        return;
 
-    INPUT inputs[2] = {};
-    inputs[0].type = INPUT_MOUSE;
-    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
-    inputs[0].mi.dx = 1;
-    inputs[1].type = INPUT_MOUSE;
-    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
-    inputs[1].mi.dx = -1;
-    SendInput(2, inputs, sizeof(INPUT));
-}
+    ShowWindow(hwnd, SW_HIDE);
 
-// ── Background monitor thread ──
-//
-// 1. Sends micro relative mouse moves to keep drop targets (Explorer, Chrome,
-//    Electron apps) continuously primed with DragOver events even when motionless.
-// 2. Polls physical key and mouse states as a fail-safe fallback in case Windows
-//    silently unhooks the low-level hook due to timeouts.
-static DWORD WINAPI DragMonitorThreadProc(LPVOID)
-{
-    bool toggle = false;
-    bool lbuttonSeen = false;
-    int tick = 0;
-    while (!g_workerStop && g_isDragging)
+    DWORD dwEffect = 0;
+    DWORD dwOK     = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
+
+    HRESULT hr = DoDragDrop(g_pState->pDataObj, g_pState->pDropSrc, dwOK, &dwEffect);
+
+    if (hr == DRAGDROP_S_DROP)
     {
-        // High-frequency polling (every 15ms)
-        if ((GetAsyncKeyState(VK_F8) & 0x8000) || (GetAsyncKeyState(VK_F8) & 0x0001) ||
-            (GetAsyncKeyState(VK_RETURN) & 0x8000))
+        if (dwEffect & DROPEFFECT_MOVE)
         {
-            TriggerDrop();
+            wprintf(L"Drop completed (Move).\n");
+            g_pState->exitCode = EXIT_OK;
         }
-        else if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) || (GetAsyncKeyState(VK_ESCAPE) & 0x0001))
+        else if (dwEffect & (DROPEFFECT_COPY | DROPEFFECT_LINK))
         {
-            TriggerCancel();
+            wprintf(L"Drop completed (Copy).\n");
+            g_pState->exitCode = EXIT_OK;
         }
-
-        // Track left mouse button release
-        bool lbtnDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-        if (lbtnDown)
+        else
         {
-            lbuttonSeen = true;
-        }
-        else if (lbuttonSeen)
-        {
-            lbuttonSeen = false;
-            TriggerDrop();
-        }
-
-        // Send mouse jiggle every ~90ms (every 6 ticks)
-        if (++tick % 6 == 0)
-        {
-            INPUT input = {};
-            input.type = INPUT_MOUSE;
-            input.mi.dwFlags = MOUSEEVENTF_MOVE;
-            input.mi.dx = toggle ? 1 : -1;
-            input.mi.dy = 0;
-            SendInput(1, &input, sizeof(INPUT));
-            toggle = !toggle;
-        }
-
-        Sleep(15);
-    }
-    return 0;
-}
-
-// ── Low-level keyboard hook ──
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
-{
-    if (nCode == HC_ACTION &&
-        (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
-    {
-        auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-
-        if (g_isDragging)
-        {
-            if (kb->vkCode == VK_F8 || kb->vkCode == VK_RETURN)
-            {
-                TriggerDrop();
-                return 1; // swallow F8 / Enter
-            }
-            if (kb->vkCode == VK_ESCAPE)
-            {
-                TriggerCancel();
-                return 1; // swallow Escape
-            }
+            wprintf(L"Drop completed.\n");
+            g_pState->exitCode = EXIT_OK;
         }
     }
-    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+    else
+    {
+        wprintf(L"Drag canceled.\n");
+        g_pState->exitCode = EXIT_CANCELLED;
+    }
+
+    DestroyWindow(hwnd);
 }
 
-// ── Helper window for OLE mouse capture ──
-static const wchar_t* kWindowClassName = L"DragUtilityHelperWnd";
-
-static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    if (msg == WM_NCHITTEST)
-        return HTTRANSPARENT; // Mouse hit-tests pass straight through to target app beneath
+    switch (msg)
+    {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        // Double buffer to avoid any flicker
+        HDC memDC      = CreateCompatibleDC(hdc);
+        HBITMAP memBm  = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HBITMAP oldBm  = static_cast<HBITMAP>(SelectObject(memDC, memBm));
+
+        // Dark modern background (Windows 11 dark acrylic style)
+        HBRUSH bgBrush   = CreateSolidBrush(RGB(32, 33, 36));
+        HPEN borderPen   = CreatePen(PS_SOLID, 2, RGB(0, 120, 215));
+        HBRUSH oldBrush  = static_cast<HBRUSH>(SelectObject(memDC, bgBrush));
+        HPEN oldPen      = static_cast<HPEN>(SelectObject(memDC, borderPen));
+
+        RoundRect(memDC, rc.left, rc.top, rc.right, rc.bottom, 16, 16);
+
+        SelectObject(memDC, oldBrush);
+        SelectObject(memDC, oldPen);
+        DeleteObject(bgBrush);
+        DeleteObject(borderPen);
+
+        // Draw 32x32 Shell File Icon
+        if (g_pState && g_pState->hIcon)
+        {
+            DrawIconEx(memDC, 14, (rc.bottom - 32) / 2, g_pState->hIcon, 32, 32, 0, nullptr, DI_NORMAL);
+        }
+
+        // Draw Typography
+        SetBkMode(memDC, TRANSPARENT);
+
+        HFONT hFontTitle = CreateFontW(
+            -13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+        HFONT hFontSub = CreateFontW(
+            -11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+        if (g_pState)
+        {
+            // Title (file name or multi-file summary)
+            HFONT oldFont = static_cast<HFONT>(SelectObject(memDC, hFontTitle));
+            SetTextColor(memDC, RGB(245, 245, 245));
+            RECT rcTitle = { 56, 14, rc.right - 14, 34 };
+            DrawTextW(memDC, g_pState->displayTitle.c_str(), -1, &rcTitle,
+                      DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            // Subtitle
+            SelectObject(memDC, hFontSub);
+            SetTextColor(memDC, RGB(160, 160, 160));
+            RECT rcSub = { 56, 36, rc.right - 14, 54 };
+            DrawTextW(memDC, g_pState->displaySubtitle.c_str(), -1, &rcSub,
+                      DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            SelectObject(memDC, oldFont);
+        }
+
+        DeleteObject(hFontTitle);
+        DeleteObject(hFontSub);
+
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, oldBm);
+        DeleteObject(memBm);
+        DeleteDC(memDC);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN:
+    {
+        PerformDrag(hwnd);
+        return 0;
+    }
+
+    case WM_KEYDOWN:
+    {
+        if (wp == VK_ESCAPE)
+        {
+            wprintf(L"Drag canceled.\n");
+            if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (wp == VK_F8 || wp == VK_RETURN || wp == VK_SPACE)
+        {
+            PerformDrag(hwnd);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_RBUTTONUP:
+    {
+        wprintf(L"Drag canceled.\n");
+        if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
+        DestroyWindow(hwnd);
+        return 0;
+    }
+
+    case WM_DESTROY:
+    {
+        PostQuitMessage(0);
+        return 0;
+    }
+    }
     return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-static HWND CreateHelperWindow(HINSTANCE hInst)
-{
-    WNDCLASSEXW wc   = {};
-    wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = WndProc;
-    wc.hInstance     = hInst;
-    wc.lpszClassName = kWindowClassName;
-    RegisterClassExW(&wc);
-
-    HWND hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
-        kWindowClassName, L"",
-        WS_POPUP,
-        0, 0, 1, 1,
-        nullptr, nullptr, hInst, nullptr);
-
-    if (hwnd)
-    {
-        SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA); // Completely invisible
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    }
-    return hwnd;
 }
 
 // ── Entry point ──
@@ -189,10 +212,10 @@ int wmain(int argc, wchar_t* argv[])
 {
     if (argc < 2) { Utils::PrintUsage(); return EXIT_BAD_ARGS; }
 
-    // Enable Per-Monitor V2 DPI awareness if available
+    // Enable Per-Monitor V2 DPI awareness
     typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
-    auto pfnSetDpi = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(
-        GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext");
+    auto pfnSetDpi = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
     if (pfnSetDpi)
         pfnSetDpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -216,107 +239,117 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
-    HWND hwndHelper = CreateHelperWindow(hInst);
 
-    // Wait for any prior F8 keypress to be physically released
-    while (GetAsyncKeyState(VK_F8) & 0x8000) Sleep(10);
+    // Register Window Class
+    WNDCLASSEXW wc   = {};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = DragCardWndProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = LoadCursorW(nullptr, IDC_HAND);
+    wc.lpszClassName = kWindowClassName;
+    RegisterClassExW(&wc);
 
-    g_mainThreadId = GetCurrentThreadId();
-    g_shouldDrop   = false;
-    g_shouldCancel = false;
-    g_workerStop   = false;
-    g_isDragging   = true;
+    DragPayloadState state;
+    state.files = files;
+    state.pDataObj = new (std::nothrow) CDataObject(files);
+    state.pDropSrc = new (std::nothrow) CDropSource(nullptr, nullptr);
 
-    // Install LL keyboard hook
-    HHOOK hHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
-                                     hInst, 0);
-    if (!hHook)
+    if (!state.pDataObj || !state.pDropSrc)
     {
-        fwprintf(stderr, L"Warning: SetWindowsHookEx failed (%lu), using polling fallback.\n", GetLastError());
+        Utils::PrintError(L"Out of memory allocating COM objects");
+        if (state.pDropSrc) state.pDropSrc->Release();
+        if (state.pDataObj) state.pDataObj->Release();
+        UnregisterClassW(kWindowClassName, hInst);
+        OleUninitialize();
+        return EXIT_COM_ERROR;
     }
 
-    // Start background monitor / jiggle thread
-    HANDLE hThread = CreateThread(nullptr, 0, DragMonitorThreadProc, nullptr, 0, nullptr);
+    // Extract File Icon
+    SHFILEINFOW sfi = {};
+    if (SHGetFileInfoW(files[0].c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON))
+        state.hIcon = sfi.hIcon;
 
-    auto* pDataObj = new (std::nothrow) CDataObject(files);
-    auto* pDropSrc = new (std::nothrow) CDropSource(&g_shouldDrop, &g_shouldCancel);
-
-    int exitCode = EXIT_COM_ERROR;
-
-    if (pDataObj && pDropSrc)
+    // Build Titles
+    if (files.size() == 1)
     {
-        DragImage::AttachShellImage(nullptr, files, pDataObj);
-
-        fwprintf(stderr, L"Dragging %zu file(s)... Move cursor over target and press F8 (or Left Click) to drop.\n", files.size());
-        for (const auto& f : files)
-            fwprintf(stderr, L"  %s\n", f.c_str());
-        fwprintf(stderr, L"Press Escape to cancel.\n\n");
-        fflush(stderr);
-
-        DWORD dwEffect = 0;
-        DWORD dwOK = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
-
-        hr = DoDragDrop(pDataObj, pDropSrc, dwOK, &dwEffect);
-
-        if (hr == DRAGDROP_S_DROP)
-        {
-            if (dwEffect == DROPEFFECT_NONE)
-            {
-                wprintf(L"Drop rejected by target.\n");
-                exitCode = EXIT_CANCELLED;
-            }
-            else if (dwEffect & DROPEFFECT_MOVE)
-            {
-                wprintf(L"Drop completed (Move).\n");
-                exitCode = EXIT_OK;
-            }
-            else if (dwEffect & DROPEFFECT_COPY)
-            {
-                wprintf(L"Drop completed (Copy).\n");
-                exitCode = EXIT_OK;
-            }
-            else
-            {
-                wprintf(L"Drop completed.\n");
-                exitCode = EXIT_OK;
-            }
-        }
-        else if (hr == DRAGDROP_S_CANCEL)
-        {
-            wprintf(L"Drag canceled.\n");
-            exitCode = EXIT_CANCELLED;
-        }
-        else
-        {
-            fwprintf(stderr, L"DoDragDrop failed (0x%08lX)\n", (unsigned long)hr);
-            exitCode = EXIT_COM_ERROR;
-        }
+        size_t lastSlash = files[0].find_last_of(L"\\/");
+        state.displayTitle = (lastSlash != std::wstring::npos) ? files[0].substr(lastSlash + 1) : files[0];
     }
     else
     {
-        Utils::PrintError(L"Out of memory allocating COM objects");
+        state.displayTitle = std::to_wstring(files.size()) + L" files";
     }
+    state.displaySubtitle = L"Drag me to drop \x2022 [Esc] Exit";
 
-    g_isDragging = false;
-    g_workerStop = true;
+    g_pState = &state;
 
-    if (hThread)
+    // Window Dimensions and Positioning near mouse
+    POINT pt;
+    GetCursorPos(&pt);
+
+    const int kWidth  = 280;
+    const int kHeight = 70;
+    int posX = pt.x - 20;
+    int posY = pt.y - 20;
+
+    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    if (GetMonitorInfoW(hMon, &mi))
     {
-        WaitForSingleObject(hThread, 1000);
-        CloseHandle(hThread);
+        if (posX + kWidth > mi.rcWork.right)   posX = mi.rcWork.right - kWidth - 10;
+        if (posX < mi.rcWork.left)             posX = mi.rcWork.left + 10;
+        if (posY + kHeight > mi.rcWork.bottom) posY = mi.rcWork.bottom - kHeight - 10;
+        if (posY < mi.rcWork.top)              posY = mi.rcWork.top + 10;
     }
 
-    if (pDropSrc) pDropSrc->Release();
-    if (pDataObj) pDataObj->Release();
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        kWindowClassName, L"drag",
+        WS_POPUP,
+        posX, posY, kWidth, kHeight,
+        nullptr, nullptr, hInst, nullptr);
 
-    if (hHook)
-        UnhookWindowsHookEx(hHook);
+    if (!hwnd)
+    {
+        Utils::PrintError(L"Failed to create drag payload window");
+        state.pDropSrc->Release();
+        state.pDataObj->Release();
+        if (state.hIcon) DestroyIcon(state.hIcon);
+        UnregisterClassW(kWindowClassName, hInst);
+        OleUninitialize();
+        return EXIT_COM_ERROR;
+    }
 
-    if (hwndHelper)
-        DestroyWindow(hwndHelper);
+    // Apply rounded window region
+    HRGN hRgn = CreateRoundRectRgn(0, 0, kWidth + 1, kHeight + 1, 16, 16);
+    SetWindowRgn(hwnd, hRgn, TRUE);
 
+    // Attach Shell Drag Image
+    DragImage::AttachShellImage(hwnd, files, state.pDataObj);
+
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    fwprintf(stderr, L"Drag payload ready. Drag card to target application or press Esc to cancel.\n");
+    for (const auto& f : files)
+        fwprintf(stderr, L"  %s\n", f.c_str());
+    fflush(stderr);
+
+    // Standard Win32 message pump
+    MSG msg = {};
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (state.hIcon)
+        DestroyIcon(state.hIcon);
+
+    state.pDropSrc->Release();
+    state.pDataObj->Release();
     UnregisterClassW(kWindowClassName, hInst);
-
     OleUninitialize();
-    return exitCode;
+
+    return state.exitCode;
 }
