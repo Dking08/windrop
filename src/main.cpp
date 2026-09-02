@@ -1,7 +1,9 @@
-// drag.exe — CLI-initiated Windows drag-and-drop utility (dragon/blobdrop for Windows)
+// windrop.exe — CLI Windows Drag-and-Drop Utility (dragon/blobdrop for Windows)
 //
-// Usage:  drag <file1> [file2 ...]
-// Flow:   A sleek floating drag-card appears at cursor → Click & drag to any app → drop!
+// Usage:  windrop <file1> [file2 ...]
+// Flow:   - Option A (Keyboard): Hover over target and press [F8] to drag → press [F8] to drop!
+//         - Option B (Mouse): Grab & drag the floating card directly to drop!
+//         - Dismiss: Right-Click or press [Esc] anytime.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -34,32 +36,96 @@ static constexpr int EXIT_FILE_MISSING = 2;
 static constexpr int EXIT_CANCELLED    = 3;
 static constexpr int EXIT_COM_ERROR    = 4;
 
-static const wchar_t* kWindowClassName = L"DragPayloadCardWnd";
+static const wchar_t* kCardClassName = L"WindropPayloadCardWnd";
 
-struct DragPayloadState
+#define WM_START_F8_DRAG (WM_APP + 1)
+
+struct WindropPayloadState
 {
     std::vector<std::wstring> files;
-    CDataObject*              pDataObj = nullptr;
-    CDropSource*              pDropSrc = nullptr;
-    HICON                     hIcon    = nullptr;
+    CDataObject*              pDataObj    = nullptr;
+    CDropSource*              pDropSrc    = nullptr;
+    HICON                     hIcon       = nullptr;
     std::wstring              displayTitle;
     std::wstring              displaySubtitle;
-    int                       exitCode = EXIT_CANCELLED;
+    int                       exitCode    = EXIT_CANCELLED;
+    HWND                      hwndCard    = nullptr;
 };
 
-static DragPayloadState* g_pState = nullptr;
+static WindropPayloadState* g_pState       = nullptr;
+static HHOOK                g_hHook        = nullptr;
+static DWORD                g_mainThreadId = 0;
+static volatile bool        g_isDragging   = false;
+static volatile bool        g_shouldDrop   = false;
+static volatile bool        g_shouldCancel = false;
 
-static void PerformDrag(HWND hwnd)
+// ── Helpers to find topmost Windrop window across processes ──
+struct TopWindropFinder
+{
+    HWND topHwnd = nullptr;
+};
+
+static BOOL CALLBACK EnumWindropWindowsProc(HWND hwnd, LPARAM lParam)
+{
+    wchar_t clsName[64] = {};
+    if (GetClassNameW(hwnd, clsName, 64) && wcscmp(clsName, kCardClassName) == 0)
+    {
+        if (IsWindowVisible(hwnd))
+        {
+            auto* pFinder = reinterpret_cast<TopWindropFinder*>(lParam);
+            if (!pFinder->topHwnd)
+                pFinder->topHwnd = hwnd;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static HWND GetTopmostWindropWindow()
+{
+    TopWindropFinder finder;
+    EnumWindows(EnumWindropWindowsProc, reinterpret_cast<LPARAM>(&finder));
+    return finder.topHwnd;
+}
+
+static void WakeupDragLoop()
+{
+    if (g_mainThreadId)
+        PostThreadMessageW(g_mainThreadId, WM_KEYDOWN, VK_ESCAPE, 0);
+
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[0].mi.dx = 1;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+    inputs[1].mi.dx = -1;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+// ── Core OLE Drag Execution ──
+static void ExecuteOLEDrag(HWND hwnd)
 {
     if (!g_pState || !g_pState->pDataObj || !g_pState->pDropSrc)
         return;
 
     ShowWindow(hwnd, SW_HIDE);
+    g_isDragging   = true;
+    g_shouldDrop   = false;
+    g_shouldCancel = false;
+
+    fwprintf(stderr, L"Dragging... move cursor over target and press [F8] (or release Click) to drop.\n");
+    fflush(stderr);
 
     DWORD dwEffect = 0;
     DWORD dwOK     = DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK;
 
     HRESULT hr = DoDragDrop(g_pState->pDataObj, g_pState->pDropSrc, dwOK, &dwEffect);
+
+    g_isDragging = false;
+
+    // Release synthesized mouse button if any
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
 
     if (hr == DRAGDROP_S_DROP)
     {
@@ -88,8 +154,72 @@ static void PerformDrag(HWND hwnd)
     DestroyWindow(hwnd);
 }
 
-static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+// ── Global Low-Level Keyboard Hook for F8 & Escape ──
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
+    {
+        auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+
+        if (kb->vkCode == VK_F8)
+        {
+            if (!g_isDragging)
+            {
+                // Phase 1: User pressed F8 to engage drag at current cursor position
+                HWND targetWnd = GetTopmostWindropWindow();
+                if (targetWnd)
+                {
+                    PostMessageW(targetWnd, WM_START_F8_DRAG, 0, 0);
+                    return 1; // swallow F8
+                }
+            }
+            else
+            {
+                // Phase 2: User pressed F8 to drop!
+                g_shouldDrop = true;
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                WakeupDragLoop();
+                return 1; // swallow F8
+            }
+        }
+        else if (kb->vkCode == VK_ESCAPE)
+        {
+            if (!g_isDragging)
+            {
+                HWND targetWnd = GetTopmostWindropWindow();
+                if (targetWnd)
+                {
+                    PostMessageW(targetWnd, WM_CLOSE, 0, 0);
+                    return 1; // swallow Escape
+                }
+            }
+            else
+            {
+                g_shouldCancel = true;
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                WakeupDragLoop();
+                return 1; // swallow Escape
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
+
+// ── Window Procedure for the visual Card ──
+static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_START_F8_DRAG)
+    {
+        // 1. Move card directly under cursor so synthesized mouse down hits OUR window
+        POINT pt = {};
+        GetCursorPos(&pt);
+        SetWindowPos(hwnd, HWND_TOPMOST, pt.x - 20, pt.y - 20, 40, 40, SWP_SHOWWINDOW);
+
+        // 2. Synthesize left mouse down to initialize genuine MK_LBUTTON OLE drag state
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        return 0;
+    }
+
     switch (msg)
     {
     case WM_PAINT:
@@ -104,11 +234,11 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         HBITMAP memBm  = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HBITMAP oldBm  = static_cast<HBITMAP>(SelectObject(memDC, memBm));
 
-        // Dark modern background (Windows 11 dark acrylic style)
+        // Dark Fluent acrylic style background
         HBRUSH bgBrush   = CreateSolidBrush(RGB(32, 33, 36));
-        HPEN borderPen   = CreatePen(PS_SOLID, 2, RGB(0, 120, 215));
+        HPEN   borderPen = CreatePen(PS_SOLID, 2, RGB(0, 162, 237)); // Glowing Cyan Accent
         HBRUSH oldBrush  = static_cast<HBRUSH>(SelectObject(memDC, bgBrush));
-        HPEN oldPen      = static_cast<HPEN>(SelectObject(memDC, borderPen));
+        HPEN   oldPen    = static_cast<HPEN>(SelectObject(memDC, borderPen));
 
         RoundRect(memDC, rc.left, rc.top, rc.right, rc.bottom, 16, 16);
 
@@ -117,7 +247,7 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         DeleteObject(bgBrush);
         DeleteObject(borderPen);
 
-        // Draw 32x32 Shell File Icon
+        // Draw 32x32 Shell Icon
         if (g_pState && g_pState->hIcon)
         {
             DrawIconEx(memDC, 14, (rc.bottom - 32) / 2, g_pState->hIcon, 32, 32, 0, nullptr, DI_NORMAL);
@@ -138,16 +268,16 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
         if (g_pState)
         {
-            // Title (file name or multi-file summary)
+            // Title (filename or summary)
             HFONT oldFont = static_cast<HFONT>(SelectObject(memDC, hFontTitle));
-            SetTextColor(memDC, RGB(245, 245, 245));
+            SetTextColor(memDC, RGB(248, 249, 250));
             RECT rcTitle = { 56, 14, rc.right - 14, 34 };
             DrawTextW(memDC, g_pState->displayTitle.c_str(), -1, &rcTitle,
                       DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
             // Subtitle
             SelectObject(memDC, hFontSub);
-            SetTextColor(memDC, RGB(160, 160, 160));
+            SetTextColor(memDC, RGB(154, 160, 166));
             RECT rcSub = { 56, 36, rc.right - 14, 54 };
             DrawTextW(memDC, g_pState->displaySubtitle.c_str(), -1, &rcSub,
                       DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -169,7 +299,7 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
     case WM_LBUTTONDOWN:
     {
-        PerformDrag(hwnd);
+        ExecuteOLEDrag(hwnd);
         return 0;
     }
 
@@ -182,15 +312,23 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             DestroyWindow(hwnd);
             return 0;
         }
-        if (wp == VK_F8 || wp == VK_RETURN || wp == VK_SPACE)
+        if (wp == VK_F8)
         {
-            PerformDrag(hwnd);
+            PostMessageW(hwnd, WM_START_F8_DRAG, 0, 0);
             return 0;
         }
         break;
     }
 
     case WM_RBUTTONUP:
+    {
+        wprintf(L"Drag canceled.\n");
+        if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
+        DestroyWindow(hwnd);
+        return 0;
+    }
+
+    case WM_CLOSE:
     {
         wprintf(L"Drag canceled.\n");
         if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
@@ -211,6 +349,8 @@ static LRESULT CALLBACK DragCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 int wmain(int argc, wchar_t* argv[])
 {
     if (argc < 2) { Utils::PrintUsage(); return EXIT_BAD_ARGS; }
+
+    g_mainThreadId = GetCurrentThreadId();
 
     // Enable Per-Monitor V2 DPI awareness
     typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
@@ -240,31 +380,31 @@ int wmain(int argc, wchar_t* argv[])
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
 
-    // Register Window Class
+    // Register Window Class for the card
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = DragCardWndProc;
+    wc.lpfnWndProc   = WindropCardWndProc;
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursorW(nullptr, IDC_HAND);
-    wc.lpszClassName = kWindowClassName;
+    wc.lpszClassName = kCardClassName;
     RegisterClassExW(&wc);
 
-    DragPayloadState state;
+    WindropPayloadState state;
     state.files = files;
     state.pDataObj = new (std::nothrow) CDataObject(files);
-    state.pDropSrc = new (std::nothrow) CDropSource(nullptr, nullptr);
+    state.pDropSrc = new (std::nothrow) CDropSource(&g_shouldDrop, &g_shouldCancel);
 
     if (!state.pDataObj || !state.pDropSrc)
     {
         Utils::PrintError(L"Out of memory allocating COM objects");
         if (state.pDropSrc) state.pDropSrc->Release();
         if (state.pDataObj) state.pDataObj->Release();
-        UnregisterClassW(kWindowClassName, hInst);
+        UnregisterClassW(kCardClassName, hInst);
         OleUninitialize();
         return EXIT_COM_ERROR;
     }
 
-    // Extract File Icon
+    // Extract Shell Icon
     SHFILEINFOW sfi = {};
     if (SHGetFileInfoW(files[0].c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON))
         state.hIcon = sfi.hIcon;
@@ -279,18 +419,28 @@ int wmain(int argc, wchar_t* argv[])
     {
         state.displayTitle = std::to_wstring(files.size()) + L" files";
     }
-    state.displaySubtitle = L"Drag me to drop \x2022 [Esc] Exit";
+    state.displaySubtitle = L"Drag or [F8] Engage \x2022 Right-Click Exit";
 
     g_pState = &state;
 
-    // Window Dimensions and Positioning near mouse
+    // Count existing Windrop windows to cascade position
+    struct CascadeCount { int count = 0; } cascade;
+    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        wchar_t cls[64] = {};
+        if (GetClassNameW(h, cls, 64) && wcscmp(cls, kCardClassName) == 0)
+            reinterpret_cast<CascadeCount*>(lp)->count++;
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&cascade));
+
+    // Positioning
     POINT pt;
     GetCursorPos(&pt);
 
     const int kWidth  = 280;
     const int kHeight = 70;
-    int posX = pt.x - 20;
-    int posY = pt.y - 20;
+    int offset = (cascade.count % 6) * 30;
+    int posX = pt.x - 20 + offset;
+    int posY = pt.y - 20 + offset;
 
     HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi = { sizeof(mi) };
@@ -304,38 +454,43 @@ int wmain(int argc, wchar_t* argv[])
 
     HWND hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        kWindowClassName, L"drag",
+        kCardClassName, L"windrop",
         WS_POPUP,
         posX, posY, kWidth, kHeight,
         nullptr, nullptr, hInst, nullptr);
 
     if (!hwnd)
     {
-        Utils::PrintError(L"Failed to create drag payload window");
+        Utils::PrintError(L"Failed to create windrop payload window");
         state.pDropSrc->Release();
         state.pDataObj->Release();
         if (state.hIcon) DestroyIcon(state.hIcon);
-        UnregisterClassW(kWindowClassName, hInst);
+        UnregisterClassW(kCardClassName, hInst);
         OleUninitialize();
         return EXIT_COM_ERROR;
     }
+
+    state.hwndCard = hwnd;
 
     // Apply rounded window region
     HRGN hRgn = CreateRoundRectRgn(0, 0, kWidth + 1, kHeight + 1, 16, 16);
     SetWindowRgn(hwnd, hRgn, TRUE);
 
-    // Attach Shell Drag Image
+    // Attach Shell Drag Image to card for direct mouse drags
     DragImage::AttachShellImage(hwnd, files, state.pDataObj);
+
+    // Install global low-level keyboard hook for F8 and Escape
+    g_hHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInst, 0);
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    fwprintf(stderr, L"Drag payload ready. Drag card to target application or press Esc to cancel.\n");
+    fwprintf(stderr, L"windrop ready. Drag card or hover over target and press [F8] to drag ([Esc] / Right-Click to dismiss).\n");
     for (const auto& f : files)
         fwprintf(stderr, L"  %s\n", f.c_str());
     fflush(stderr);
 
-    // Standard Win32 message pump
+    // Message pump
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0))
     {
@@ -343,12 +498,18 @@ int wmain(int argc, wchar_t* argv[])
         DispatchMessageW(&msg);
     }
 
+    if (g_hHook)
+    {
+        UnhookWindowsHookEx(g_hHook);
+        g_hHook = nullptr;
+    }
+
     if (state.hIcon)
         DestroyIcon(state.hIcon);
 
     state.pDropSrc->Release();
     state.pDataObj->Release();
-    UnregisterClassW(kWindowClassName, hInst);
+    UnregisterClassW(kCardClassName, hInst);
     OleUninitialize();
 
     return state.exitCode;
