@@ -1,65 +1,57 @@
 # drag.exe — CLI Windows Drag-and-Drop Utility
 
-Initiate a **native Windows drag-and-drop operation directly from the terminal**.
+> **The `dragon` / `blobdrop` alternative for Windows.**  
+> Initiate a **native Windows OLE drag-and-drop operation directly from your terminal**.
 
 ```powershell
 PS C:\Stuff> drag report.pdf
-# → cursor becomes a drag payload; drop onto Discord, browser, Explorer, etc.
-Drop completed
+# → A sleek floating card appears at your cursor
+# → Click and drag directly into Discord, Chrome, VS Code, Explorer, Slack, etc.
+Drop completed (Copy).
 ```
 
 ---
 
-## Requirements
+## Features
 
-| Tool | Version |
-|------|---------|
-| Windows | 10 / 11 (x64 recommended) |
-| Visual Studio | 2019 or 2022 (Desktop C++ workload) |
-| CMake | 3.16 or later |
-
-> **MinGW/MSYS2** works too if you have `cmake` and a MinGW-w64 toolchain, but
-> MSVC is recommended for best shell-API compatibility.
+- 🎴 **Floating Drag Card**: Summons a lightweight, dark-acrylic floating card at your cursor displaying the file's native 32x32 shell icon and filename.
+- 🚀 **100% Native Windows OLE**: Initiates standard Windows OLE `DoDragDrop` directly on mouse interaction with 0 terminal interference or text-selection conflicts.
+- 📦 **Multi-Format Shell Payload**:
+  - `CF_HDROP` (Native file lists for Explorer, 7-Zip, Discord, Slack)
+  - `CFSTR_PREFERREDDROPEFFECT` (`DROPEFFECT_COPY | DROPEFFECT_MOVE`)
+  - `CF_UNICODETEXT` & `CF_TEXT` (Newline-separated file paths for text editors & terminals)
+  - `CFSTR_SHELLURL` (`file:///` URLs for web browsers & web apps)
+- 🖼️ **Shell Drag Thumbnail**: Automatically renders a translucent shell thumbnail preview using `IDragSourceHelper2`.
+- ⚡ **Instant Auto-Exit**: Closes and returns to the command line immediately upon drop completion or cancellation.
+- ⌨️ **Keyboard Controls**: Press `Escape` or Right-Click anywhere to dismiss; press `F8`, `Enter`, or `Space` to initiate drag.
+- 🖥️ **Per-Monitor V2 DPI Aware**: Sharp rendering on 4K / high-DPI displays.
 
 ---
 
-## Build Instructions
+## Quick Start / Build Instructions
 
-### Option A — Visual Studio Developer Command Prompt (recommended)
+### Requirements
+- Windows 10 / 11 (x64)
+- Visual Studio 2019 or 2022 (C++ Desktop workload)
+- CMake 3.16+
 
-```cmd
-git clone <repo>   OR   unzip the source archive
-cd drag
+### Build & Install (PowerShell)
 
-:: Create and enter build directory
+You can build and install directly using the included PowerShell script:
+
+```powershell
+.\bcmd.ps1
+```
+
+Or build manually via CMake:
+
+```powershell
+# Configure & build Release binary
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 
-:: Output:
-::   build\Release\drag.exe
-```
-
-To install to `C:\Tools\bin` (edit path as desired):
-
-```cmd
-cmake --install build --config Release --prefix C:\Tools
-```
-
-### Option B — Ninja (faster incremental builds)
-
-```cmd
-cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-
-:: Output:
-::   build\drag.exe
-```
-
-### Option C — CMake Preset (VS 2022 + Ninja)
-
-```cmd
-cmake --preset release   # requires CMakePresets.json if you add one
-cmake --build --preset release
+# Output binary located at:
+#   build\Release\drag.exe
 ```
 
 ---
@@ -67,165 +59,115 @@ cmake --build --preset release
 ## Usage
 
 ```powershell
-drag <files>
+drag <files...>
 ```
 
 ### Examples
 
 ```powershell
-# Single file
-drag image.png
+# Drag a single file
+drag photo.png
 
-# Multiple files
-drag file1.txt file2.txt
+# Drag multiple files
+drag report.pdf notes.txt data.csv
 
-# Wildcard
+# Wildcards
 drag *.jpg
 
-# Absolute path
-drag C:\Users\me\Desktop\report.docx
+# Paths with spaces
+drag "C:\My Documents\Quarterly Report.xlsx"
 
-# Quoted path with spaces
-drag "my document.pdf"
-
-# Relative path
-drag .\subfolder\photo.jpg
+# Relative paths
+drag .\dist\bundle.js
 ```
 
-### Exit codes
+### Keyboard & Mouse Controls
+
+| Action | Control |
+| :--- | :--- |
+| **Start Drag & Drop** | Click & drag the floating card with Left Mouse Button |
+| **Alternate Drag Trigger** | Press `F8`, `Enter`, or `Space` while card is focused |
+| **Cancel & Exit** | Press `Escape` or Right-Click the card |
+
+### Exit Codes
 
 | Code | Meaning |
-|------|---------|
-| `0` | Drop accepted by target |
-| `1` | Invalid arguments / no files specified |
-| `2` | One or more files not found |
-| `3` | Drag cancelled (Escape pressed or released over non-target) |
-| `4` | COM / internal error |
+| :---: | :--- |
+| `0` | Drop completed successfully (`EXIT_OK`) |
+| `1` | Invalid arguments / no files specified (`EXIT_BAD_ARGS`) |
+| `2` | One or more files not found (`EXIT_FILE_MISSING`) |
+| `3` | Drag cancelled (`EXIT_CANCELLED`) |
+| `4` | COM / internal initialization error (`EXIT_COM_ERROR`) |
 
 ---
 
-## Architecture
+## Architecture & How It Works
 
 ```
 drag/
-├── CMakeLists.txt          Build system (MSVC, Ninja, MinGW)
+├── CMakeLists.txt          # Modern C++17 build configuration (/W4 /WX strict)
+├── bcmd.ps1                # Build & deployment script
 └── src/
-    ├── main.cpp            Entry point, COM init, DoDragDrop orchestration
-    ├── DropSource.cpp/.h   IDropSource — controls the drag loop
-    ├── DataObject.cpp/.h   IDataObject — exposes files via CF_HDROP
-    ├── DragImage.cpp/.h    IDragSourceHelper — attaches shell drag image
-    └── Utils.cpp/.h        Path resolution, wildcard expansion, helpers
+    ├── main.cpp            # Entry point, Win32 GUI card, DoDragDrop orchestration
+    ├── DropSource.cpp/.h   # IDropSource — OLE drag loop state & feedback
+    ├── DataObject.cpp/.h   # IDataObject — multi-format shell clipboard provider
+    ├── DragImage.cpp/.h    # IDragSourceHelper — shell drag preview renderer
+    └── Utils.cpp/.h        # Path canonicalization & wildcard resolution
 ```
 
-### Component responsibilities
-
-#### `main.cpp`
-- Parses arguments via `wmain(argc, argv)`
-- Calls `Utils::ResolvePaths()` to canonicalise paths and expand wildcards
-- Initialises COM with `OleInitialize()` (STA thread apartment)
-- Creates a **hidden message-only HWND** (required by `IDragSourceHelper` and `DoDragDrop`)
-- Constructs `CDataObject` and `CDropSource`
-- Calls `DragImage::AttachShellImage()` (best-effort)
-- Uses `SendInput()` to synthesise a mouse-left-down event so `DoDragDrop` sees `MK_LBUTTON` set from the very start
-- Calls `DoDragDrop()` — **this call blocks until the user drops or cancels**
-- Prints result and returns appropriate exit code
-
-#### `DropSource.cpp` — `IDropSource`
-- `QueryContinueDrag()`: returns `DRAGDROP_S_CANCEL` on Escape; `DRAGDROP_S_DROP` when LMB is released; `S_OK` otherwise
-- `GiveFeedback()`: returns `DRAGDROP_S_USEDEFAULTCURSORS` → Windows manages cursor icons identically to Explorer
-
-#### `DataObject.cpp` — `IDataObject`
-- `GetData(CF_HDROP, TYMED_HGLOBAL)`: builds a `DROPFILES` HGLOBAL with all file paths (UTF-16, double-NUL terminated)
-- `QueryGetData()`: advertises CF_HDROP/HGLOBAL support
-- `EnumFormatEtc()`: exposes a minimal `IEnumFORMATETC` so well-behaved targets can discover the format
-
-#### `DragImage.cpp`
-- CoCreates `CLSID_DragDropHelper` (the shell drag image manager)
-- Queries `IDragSourceHelper2` and enables `DSH_ALLOWDROPDESCRIPTIONTEXT` for rich drop descriptions
-- Retrieves the shell file icon via `SHGetFileInfoW`
-- Renders a 32bpp DIB bitmap: icon + filename (or "+ N files") with 50% alpha for the translucent Explorer look
-- Calls `IDragSourceHelper::InitializeFromBitmap()` to attach the image to the data object
-
-#### `Utils.cpp`
-- `ResolvePaths()`: expands wildcards with `FindFirstFileW`/`FindNextFileW`, canonicalises paths with `GetFullPathNameW`, verifies existence with `GetFileAttributesW`, deduplicates results
-- Error/usage printing helpers
-
----
-
-## How it works end-to-end
+### Execution Flow
 
 ```
-CLI user types: drag *.png
-        │
-        ▼
-wmain parses args → ResolvePaths expands *.png → [a.png, b.png, c.png]
-        │
-        ▼
-OleInitialize()  (COM STA)
-        │
-        ▼
-CreateHelperWindow()  (hidden HWND_MESSAGE)
-        │
-        ▼
-new CDataObject([a.png, b.png, c.png])
-   └── CF_HDROP HGLOBAL built on demand when target calls GetData()
-        │
-        ▼
-new CDropSource()
-        │
-        ▼
-DragImage::AttachShellImage()
-   └── CLSID_DragDropHelper → shell icon + label bitmap → stored on data object
-        │
-        ▼
-SendInput(MOUSEEVENTF_LEFTDOWN)   ← synthesise the "button held" state
-        │
-        ▼
-DoDragDrop(pDataObj, pDropSrc,
-           COPY|MOVE|LINK, &dwEffect)
-   ┌─────────────────────────────────────┐
-   │  Internal drag loop (OLE manages)   │
-   │  ┌──────────────────────────────┐   │
-   │  │ On each mouse event:          │   │
-   │  │   QueryContinueDrag()         │   │
-   │  │     Escape? → CANCEL          │   │
-   │  │     LMB up? → DROP            │   │
-   │  │     else   → S_OK             │   │
-   │  │   GiveFeedback()              │   │
-   │  │     → USE_DEFAULT_CURSORS     │   │
-   │  └──────────────────────────────┘   │
-   └─────────────────────────────────────┘
-        │
-        ▼
-DRAGDROP_S_DROP   → "Drop completed"  exit 0
-DRAGDROP_S_CANCEL → "Drag canceled"   exit 3
+1. CLI invocation: drag *.png
+   │
+   ├─► Utils::ResolvePaths expands globs and verifies file existence
+   ├─► OleInitialize() initializes COM Single-Threaded Apartment (STA)
+   ├─► CDataObject builds multi-format payload (HDROP, text, URL, effects)
+   ├─► Extract high-res 32x32 shell icon via SHGetFileInfoW
+   │
+2. Floating Card Window (DragPayloadCardWnd)
+   │
+   ├─► Positioned at cursor on the active display monitor
+   ├─► Renders dark acrylic card (Segoe UI typography, icon, accent border)
+   │
+3. User Clicks & Drags
+   │
+   ├─► Card hides (ShowWindow(SW_HIDE))
+   ├─► DoDragDrop() takes over with native Windows OLE mouse capture
+   ├─► IDragSourceHelper renders translucent drag thumbnail
+   │
+4. Target Application Interaction
+   │
+   ├─► Target window receives DragEnter / DragOver with full MK_LBUTTON state
+   ├─► Target displays visual drop indicator ("Drop here" / "+ Copy" / "Upload")
+   │
+5. Drop Completion
+   │
+   ├─► User releases mouse button over target
+   ├─► Target executes IDropTarget::Drop() and ingests payload
+   ├─► DoDragDrop() returns DRAGDROP_S_DROP
+   └─► drag.exe prints "Drop completed (Copy)." and exits (code 0)
 ```
 
 ---
 
-## Compatibility notes
+## Target Compatibility
 
-- **Chrome / Chromium-based browsers** (upload inputs, Gmail attach, etc.): ✅ CF_HDROP is fully supported
-- **Discord**: ✅ accepts CF_HDROP file drops
-- **Slack**: ✅ same
-- **Windows Explorer**: ✅ native
-- **VS Code**: ✅ uses Electron, which delegates to Chromium file drop handling
-- **Any Win32 app registering as a drop target**: ✅ standard OLE protocol
+| Target Application | Supported Payload | Status |
+| :--- | :--- | :---: |
+| **Discord / Slack / Teams** | `CF_HDROP` / `CFSTR_SHELLURL` | ✅ Full Support |
+| **Chrome / Edge / Firefox** | File upload inputs, Gmail, web apps | ✅ Full Support |
+| **VS Code / Cursor / IDEs** | Editor split / file explorer drop | ✅ Full Support |
+| **Windows File Explorer** | Copy / Move file operations | ✅ Full Support |
+| **Text Editors / Notepad** | `CF_UNICODETEXT` (file paths) | ✅ Full Support |
+| **Adobe Suite / Photoshop / GIMP** | Image drag ingestion | ✅ Full Support |
 
 ---
 
 ## Troubleshooting
 
-**"Error: File not found: *.png" even though files exist**
-→ The shell has already expanded the glob before passing to `wmain`. Pass the
-  literal pattern in quotes: `drag "*.png"` or use PowerShell's `-LiteralPath`.
-  In PowerShell, globs are expanded by PowerShell itself before reaching the
-  executable; you may need `drag (Get-Item *.png).FullName`.
+- **Globs / Wildcards in PowerShell**:
+  In PowerShell, `drag *.png` might be expanded before reaching `drag.exe`. If you encounter path parsing issues with complex expressions, wrap in quotes: `drag "*.png"`.
 
-**Drag starts but cursor shows "no-drop" everywhere**
-→ Run from an interactive desktop session (not SSH/headless). Drag-and-drop
-  requires a visible interactive window station.
-
-**Drag image doesn't appear**
-→ Shell image creation is best-effort; the drag still works. May happen in
-  restricted environments or with unusual file types.
+- **Headless / SSH Sessions**:
+  Windows OLE drag-and-drop requires an active, interactive desktop window station. It cannot run across headless SSH sessions without a desktop display.
