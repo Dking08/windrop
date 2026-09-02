@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(drag
+project(windrop
     VERSION     1.0.0
-    DESCRIPTION "CLI-initiated Windows drag-and-drop utility"
+    DESCRIPTION "CLI-initiated Windows drag-and-drop utility (dragon/blobdrop for Windows)"
     LANGUAGES   CXX
 )
 
@@ -10,7 +10,7 @@ project(drag
 # Platform guard – this utility is Windows-only
 # ──────────────────────────────────────────────────────────────────────────────
 if(NOT WIN32)
-    message(FATAL_ERROR "drag.exe is a Windows-only utility.")
+    message(FATAL_ERROR "windrop.exe is a Windows-only utility.")
 endif()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -44,12 +44,12 @@ set(SOURCES
 # We intentionally do NOT pass WIN32 so that the normal console subsystem is
 # used – this means stdout/stderr work correctly inside PowerShell / CMD.
 # ──────────────────────────────────────────────────────────────────────────────
-add_executable(drag ${SOURCES})
+add_executable(windrop ${SOURCES})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Preprocessor definitions
 # ──────────────────────────────────────────────────────────────────────────────
-target_compile_definitions(drag PRIVATE
+target_compile_definitions(windrop PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN
@@ -63,7 +63,7 @@ target_compile_definitions(drag PRIVATE
 # Compiler options
 # ──────────────────────────────────────────────────────────────────────────────
 if(MSVC)
-    target_compile_options(drag PRIVATE
+    target_compile_options(windrop PRIVATE
         /W4         # High warning level
         /WX         # Warnings as errors (strict)
         /permissive- # Conformance mode
@@ -72,11 +72,11 @@ if(MSVC)
     )
 
     # Enable /LTCG (Link-Time Code Generation) for Release builds
-    set_target_properties(drag PROPERTIES
+    set_target_properties(windrop PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
     )
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(drag PRIVATE
+    target_compile_options(windrop PRIVATE
         -Wall -Wextra -Wpedantic
     )
 endif()
@@ -92,7 +92,7 @@ endif()
 #  gdi32.lib    – CreateDIBSection, CreateCompatibleDC, DrawIconEx, TextOut…
 #  user32.lib   – SendInput, CreateWindowEx, DefWindowProc, GetDC, …
 # ──────────────────────────────────────────────────────────────────────────────
-target_link_libraries(drag PRIVATE
+target_link_libraries(windrop PRIVATE
     ole32
     oleaut32
     shell32
@@ -106,7 +106,7 @@ target_link_libraries(drag PRIVATE
 # (no dependency on VCRUNTIME140.dll)
 # ──────────────────────────────────────────────────────────────────────────────
 if(MSVC)
-    set_property(TARGET drag PROPERTY
+    set_property(TARGET windrop PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
 endif()
@@ -114,15 +114,15 @@ endif()
 # ──────────────────────────────────────────────────────────────────────────────
 # Installation (optional)
 # ──────────────────────────────────────────────────────────────────────────────
-install(TARGETS drag RUNTIME DESTINATION bin)
+install(TARGETS windrop RUNTIME DESTINATION bin)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────────────────────────────────────
 message(STATUS "")
-message(STATUS "=== drag.exe build configuration ===")
+message(STATUS "=== windrop.exe build configuration ===")
 message(STATUS "  Compiler  : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  Standard  : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "=====================================")
+message(STATUS "========================================")
 message(STATUS "")

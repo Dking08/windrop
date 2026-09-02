@@ -163,14 +163,19 @@ std::vector<std::wstring> ParseCommandLine(const wchar_t* cmdLine)
 void PrintUsage()
 {
     fwprintf(stderr,
+        L"windrop - CLI Windows Drag-and-Drop Utility (dragon/blobdrop for Windows)\n\n"
         L"Usage:\n"
-        L"  drag <files>\n\n"
+        L"  windrop <files...>\n\n"
         L"Examples:\n"
-        L"  drag a.txt\n"
-        L"  drag *.png\n"
-        L"  drag file1 file2\n"
-        L"  drag \"my file.pdf\"\n"
-        L"  drag C:\\Users\\me\\Desktop\\report.docx\n");
+        L"  windrop a.txt\n"
+        L"  windrop *.png\n"
+        L"  windrop file1.pdf file2.png\n"
+        L"  windrop \"my report.docx\"\n"
+        L"  windrop C:\\Users\\me\\Desktop\\photo.jpg\n\n"
+        L"Controls:\n"
+        L"  - Click & drag card to target application\n"
+        L"  - Hover over target application and press [F8] to instant-drop\n"
+        L"  - Press [Esc] or Right-Click to dismiss\n");
 }
 
 // ---------------------------------------------------------------------------
