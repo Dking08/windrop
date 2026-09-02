@@ -2,3 +2,4 @@ build/
 misc-visitors/
 *.exe
 bcmd.ps1
+checksums.txt
