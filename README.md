@@ -4,7 +4,7 @@ A lightweight CLI drag-and-drop utility for Windows (`dragon` / `blobdrop` alter
 
 **100% Native Win32 / OLE** &bull; **Single Standalone Binary** &bull; **Peak Working Set < 3MB** &bull; **Zero Background Bloat / Zero Services**
 
-https://github.com/user-attachments/assets/36948fa9-7e54-4ef4-8b24-8652923e40c3
+https://github.com/user-attachments/assets/872c8631-a4ee-4f3e-ae3a-3ed750afc4c6
 
 `windrop` lets you initiate native Windows drag-and-drop operations directly from your terminal or scripts without running background daemons or heavy electron wrappers.
 
