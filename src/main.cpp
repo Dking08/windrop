@@ -114,7 +114,7 @@ static void ExecuteOLEDrag(HWND hwnd)
     g_shouldDrop   = false;
     g_shouldCancel = false;
 
-    fwprintf(stderr, L"Dragging... move cursor over target and press [F8] (or release Click) to drop.\n");
+    fwprintf(stderr, L"Dragging... hover over target window and press [F8] to drop ([Esc] to cancel).\n");
     fflush(stderr);
 
     DWORD dwEffect = 0;
@@ -485,7 +485,7 @@ int wmain(int argc, wchar_t* argv[])
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    fwprintf(stderr, L"windrop ready. Drag card or hover over target and press [F8] to drag ([Esc] / Right-Click to dismiss).\n");
+    fwprintf(stderr, L"windrop ready. Hover over target and press [F8] to drag, or drag card directly ([Esc] / Right-Click to dismiss).\n");
     for (const auto& f : files)
         fwprintf(stderr, L"  %s\n", f.c_str());
     fflush(stderr);

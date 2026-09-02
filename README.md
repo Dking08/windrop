@@ -1,13 +1,13 @@
-# windrop.exe — CLI Windows Drag-and-Drop Utility
+# windrop
 
-> **The `dragon` / `blobdrop` alternative for Windows.**  
-> Initiate a **native Windows OLE drag-and-drop operation directly from your terminal**.
+CLI Windows Drag-and-Drop Utility (dragon / blobdrop alternative for Windows).
+
+`windrop` allows you to initiate native Windows OLE drag-and-drop operations directly from your terminal, command line, or scripts.
 
 ```powershell
 PS C:\Stuff> windrop report.pdf
-# → Native OLE drag is initiated with your cursor
-# → Hover over Discord, Chrome, VS Code, Explorer, Slack, etc.
-# → Press [F8] (or Left Click) to drop!
+# Move cursor over target window (Discord, Chrome, VS Code, Explorer, Slack, etc.)
+# Press [F8] to drag -> press [F8] to drop!
 Drop completed (Copy).
 ```
 
@@ -15,45 +15,38 @@ Drop completed (Copy).
 
 ## Features
 
-- 🚀 **100% Native Windows OLE**: Standard Windows OLE `DoDragDrop` protocol with live `DragEnter`, `DragOver`, and `Drop` target negotiation.
-- 🎯 **F8 Quick-Drop**: Move your mouse cursor anywhere on your screen and press **`F8`** to drop into whatever window is under the cursor.
-- 🖱️ **Physical Click-to-Drop**: Releasing Left Mouse Button over any drop target also completes the drop.
-- 📦 **Multi-Format Shell Payload**:
-  - `CF_HDROP` (Native file lists for Explorer, 7-Zip, Discord, Slack)
-  - `CFSTR_PREFERREDDROPEFFECT` (`DROPEFFECT_COPY | DROPEFFECT_MOVE`)
-  - `CF_UNICODETEXT` & `CF_TEXT` (Newline-separated file paths for text editors & terminals)
-  - `CFSTR_SHELLURL` (`file:///` URLs for web browsers & web apps)
-- 🖼️ **Shell Drag Thumbnail**: Automatically renders a translucent shell thumbnail preview using `IDragSourceHelper2`.
-- ⚡ **Instant Auto-Exit**: Closes and returns to the command line immediately upon drop completion or cancellation.
-- ⌨️ **Keyboard Controls**: Press **`Escape`** anywhere to cancel; press **`F8`** to drop.
-- 🖥️ **Per-Monitor V2 DPI Aware**: Crisp rendering on 4K / high-DPI displays.
+- **100% Native Windows OLE**: Implements standard Windows OLE `DoDragDrop` protocol with live `DragEnter`, `DragOver`, and `Drop` target negotiation.
+- **2-Step Keyboard Drag (`F8`)**: Hover your cursor over any target window, press **`F8`** to engage drag (illuminating drop cues), and press **`F8`** again to drop.
+- **Floating Drag Card (Mouse Drag)**: Grab and drag the floating acrylic widget card directly into any target application.
+- **Multi-Widget Staging**: Spawning multiple `windrop` processes automatically cascades independent cards (`+30px` offset) across your screen.
+- **Multi-Format Shell Payload**:
+  - `CF_HDROP`: Native shell file lists for Explorer, 7-Zip, Discord, Slack.
+  - `CFSTR_PREFERREDDROPEFFECT`: Explicit `DROPEFFECT_COPY` / `DROPEFFECT_MOVE` negotiation.
+  - `CF_UNICODETEXT` & `CF_TEXT`: Newline-separated file paths for text editors, IDEs, and terminals.
+  - `CFSTR_SHELLURL`: `file:///` URLs for web browsers and Electron web applications.
+- **Shell Drag Image**: Translucent shell drag preview rendered via `IDragSourceHelper2`.
+- **Per-Monitor V2 DPI Aware**: Native crisp rendering across high-DPI and mixed-monitor setups.
+- **Fast Dismissal**: Right-Click or press **`Escape`** anywhere on your keyboard to cancel.
 
 ---
 
-## Quick Start / Build Instructions
+## Build Instructions
 
 ### Requirements
 - Windows 10 / 11 (x64)
-- Visual Studio 2019 or 2022 (C++ Desktop workload)
+- Visual Studio 2019 or 2022 (Desktop development with C++)
 - CMake 3.16+
 
-### Build & Install (PowerShell)
-
-You can build and install directly using the included PowerShell script:
+### Build via PowerShell (2 lines)
 
 ```powershell
-.\bcmd.ps1
-```
-
-Or build manually via CMake:
-
-```powershell
-# Configure & build Release binary
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
+```
 
-# Output binary located at:
-#   build\Release\windrop.exe
+The compiled binary will be located at:
+```
+build/Release/windrop.exe
 ```
 
 ---
@@ -67,10 +60,10 @@ windrop <files...>
 ### Examples
 
 ```powershell
-# Drag a single file
+# Single file
 windrop photo.png
 
-# Drag multiple files
+# Multiple files
 windrop report.pdf notes.txt data.csv
 
 # Wildcards
@@ -85,85 +78,92 @@ windrop .\dist\bundle.js
 
 ### Controls
 
-| Action | Control |
+| Action | Key / Interaction |
 | :--- | :--- |
-| **Drop payload into target** | Hover cursor over target and press **`F8`** (or Left Click) |
-| **Cancel & Exit** | Press **`Escape`** |
+| **Engage Drag (Keyboard)** | Hover cursor over destination window and press **`F8`** |
+| **Commit Drop (Keyboard)** | Press **`F8`** again over the destination window |
+| **Mouse Drag** | Grab and drag the floating card directly into the target window |
+| **Cancel / Dismiss** | Press **`Escape`** or **Right-Click** the card |
 
 ### Exit Codes
 
-| Code | Meaning |
-| :---: | :--- |
-| `0` | Drop completed successfully (`EXIT_OK`) |
-| `1` | Invalid arguments / no files specified (`EXIT_BAD_ARGS`) |
-| `2` | One or more files not found (`EXIT_FILE_MISSING`) |
-| `3` | Drag cancelled (`EXIT_CANCELLED`) |
-| `4` | COM / internal initialization error (`EXIT_COM_ERROR`) |
+| Exit Code | Constant | Meaning |
+| :---: | :--- | :--- |
+| `0` | `EXIT_OK` | Drop completed successfully |
+| `1` | `EXIT_BAD_ARGS` | Invalid arguments or no files specified |
+| `2` | `EXIT_FILE_MISSING` | One or more specified files were not found |
+| `3` | `EXIT_CANCELLED` | Drag cancelled by user (Escape / Right-Click) |
+| `4` | `EXIT_COM_ERROR` | Internal OLE / COM initialization error |
 
 ---
 
-## Architecture & How It Works
+## Architecture
 
 ```
 windrop/
 ├── CMakeLists.txt          # Modern C++17 build configuration (/W4 /WX strict)
-├── bcmd.ps1                # Build & deployment script
 └── src/
-    ├── main.cpp            # Entry point, OLE message pump, DoDragDrop orchestration
-    ├── DropSource.cpp/.h   # IDropSource — OLE drag loop state & feedback
-    ├── DataObject.cpp/.h   # IDataObject — multi-format shell clipboard provider
-    ├── DragImage.cpp/.h    # IDragSourceHelper — shell drag preview renderer
-    └── Utils.cpp/.h        # Path canonicalization & wildcard resolution
+    ├── main.cpp            # Entry point, UI card window, OLE DoDragDrop loop
+    ├── DropSource.cpp/.h   # IDropSource implementation & drop query state
+    ├── DataObject.cpp/.h   # IDataObject multi-format shell clipboard provider
+    ├── DragImage.cpp/.h    # IDragSourceHelper shell thumbnail preview renderer
+    └── Utils.cpp/.h        # Wildcard expansion and path resolution
 ```
 
-### Execution Flow
+### Technical Workflow
 
 ```
-1. CLI invocation: windrop *.png
+1. CLI Invocation: windrop *.png
    │
    ├─► Utils::ResolvePaths expands globs and verifies file existence
    ├─► OleInitialize() initializes COM Single-Threaded Apartment (STA)
    ├─► CDataObject builds multi-format payload (HDROP, text, URL, effects)
-   ├─► CDropSource initialized with atomic drop/cancel flags
+   ├─► CDropSource initializes atomic drop/cancel flags
+   └─► Creates top-level floating card widget with 32x32 shell icon
    │
-2. DoDragDrop Active OLE Loop
+2. Drag Execution
    │
-   ├─► Transparent click-through helper window manages OLE desktop capture
-   ├─► Background jiggle thread pulses micro-moves to keep DragOver active
-   ├─► Shell thumbnail follows cursor
+   ├─► Mouse Mode: WM_LBUTTONDOWN initiates DoDragDrop natively
+   └─► Keyboard Mode: [F8] snaps card to cursor and initiates synchronized
+       WM_LBUTTONDOWN to provide genuine MK_LBUTTON OLE mouse capture
    │
 3. Target Window Negotiation
    │
-   ├─► Target window under cursor receives DragEnter and DragOver
-   ├─► Target application shows visual drop cues ("Drop here" / "+ Copy" / "Upload")
+   ├─► Target application receives DragEnter and DragOver
+   ├─► Target displays visual drop cue ("Drop files here" / "+ Copy" / "Upload")
    │
-4. Drop Trigger (F8 or Left Click)
+4. Drop Commitment
    │
-   ├─► Low-level keyboard hook catches F8 → sets shouldDrop = true
-   ├─► QueryContinueDrag returns DRAGDROP_S_DROP
-   ├─► Target executes IDropTarget::Drop() and ingests files
-   └─► windrop.exe prints "Drop completed (Copy)." and exits (code 0)
+   ├─► 2nd [F8] or Mouse Release triggers DRAGDROP_S_DROP
+   ├─► Target window executes IDropTarget::Drop() and ingests payload
+   └─► windrop.exe outputs "Drop completed (Copy)." and exits with code 0
 ```
 
 ---
 
-## Target Compatibility
+## Target Application Compatibility
 
 | Target Application | Supported Payload | Status |
 | :--- | :--- | :---: |
-| **Discord / Slack / Teams** | `CF_HDROP` / `CFSTR_SHELLURL` | ✅ Full Support |
-| **Chrome / Edge / Firefox** | File upload inputs, Gmail, web apps | ✅ Full Support |
-| **VS Code / Cursor / IDEs** | Editor split / file explorer drop | ✅ Full Support |
-| **Windows File Explorer** | Copy / Move file operations | ✅ Full Support |
-| **Text Editors / Notepad** | `CF_UNICODETEXT` (file paths) | ✅ Full Support |
-| **Adobe Suite / Photoshop / GIMP** | Image drag ingestion | ✅ Full Support |
+| Discord, Slack, Microsoft Teams | `CF_HDROP`, `CFSTR_SHELLURL` | Full Support |
+| Chrome, Edge, Firefox, Brave | HTML5 file drop, Gmail, web uploads | Full Support |
+| VS Code, Cursor, Visual Studio | Editor split view, file explorer drop | Full Support |
+| Windows File Explorer | File copy and move operations | Full Support |
+| Notepad, Sublime Text, Text Editors | `CF_UNICODETEXT` (file paths) | Full Support |
+| Photoshop, Illustrator, GIMP | Image canvas ingestion | Full Support |
 
 ---
 
 ## Troubleshooting
 
-- **Globs / Wildcards in PowerShell**:
-  In PowerShell, `windrop *.png` might be expanded before reaching `windrop.exe`. If you encounter path parsing issues with complex expressions, wrap in quotes: `windrop "*.png"`.
+- **PowerShell Wildcard Expansion**:
+  In PowerShell, `windrop *.png` may be pre-expanded by the shell. To let `windrop` handle path canonicalization directly, quote expressions: `windrop "*.png"`.
 
-- **Headless / SSH Sessions**:
-  Windows OLE drag-and-drop requires an active, interactive desktop window station. It cannot run across headless SSH sessions without a desktop display.
+- **Interactive Session Requirement**:
+  Windows OLE drag-and-drop requires an active interactive desktop window station (`WinSta0`). It cannot execute across headless SSH sessions without an attached display.
+
+---
+
+## License
+
+MIT License. See `LICENSE` for details.

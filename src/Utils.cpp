@@ -173,8 +173,8 @@ void PrintUsage()
         L"  windrop \"my report.docx\"\n"
         L"  windrop C:\\Users\\me\\Desktop\\photo.jpg\n\n"
         L"Controls:\n"
-        L"  - Click & drag card to target application\n"
-        L"  - Hover over target application and press [F8] to instant-drop\n"
+        L"  - Hover over target window and press [F8] to drag -> press [F8] to drop\n"
+        L"  - Grab & drag the floating card directly into any window\n"
         L"  - Press [Esc] or Right-Click to dismiss\n");
 }
 
