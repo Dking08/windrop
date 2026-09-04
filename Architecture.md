@@ -43,7 +43,7 @@ windrop/
    │
 4. Drop Commitment
    │
-   ├─► 2nd [F8] or Mouse Release triggers DRAGDROP_S_DROP
+   ├─► 2nd [F8], Left-Click, or Mouse Release triggers DRAGDROP_S_DROP
    ├─► Target window executes IDropTarget::Drop() and ingests payload
    └─► windrop.exe outputs "Drop completed (Copy)." and exits with code 0
 ```

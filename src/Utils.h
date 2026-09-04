@@ -3,14 +3,17 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 // ----------------------------------------------------------------------------
-// Utility helpers for drag.exe
+// Utility helpers for windrop.exe
 // ----------------------------------------------------------------------------
 namespace Utils
 {
+    inline constexpr wchar_t kVersion[] = L"2.0.1";
+
     // -----------------------------------------------------------------------
     // ResolvePaths
     //
@@ -34,8 +37,9 @@ namespace Utils
     std::vector<std::wstring> ParseCommandLine(const wchar_t* cmdLine);
 
     // -----------------------------------------------------------------------
-    // PrintUsage / PrintError helpers
+    // CLI feedback helpers
     // -----------------------------------------------------------------------
-    void PrintUsage();
+    void PrintVersion();
+    void PrintUsage(FILE* out = stdout);
     void PrintError(const std::wstring& msg);
 }

@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(windrop
-    VERSION     1.0.0
-    DESCRIPTION "CLI-initiated Windows drag-and-drop utility (dragon/blobdrop for Windows)"
+    VERSION     2.0.1
+    DESCRIPTION "CLI-initiated Windows drag-and-drop utility"
     LANGUAGES   CXX
 )
 

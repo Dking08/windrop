@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/872c8631-a4ee-4f3e-ae3a-3ed750afc4c6
 ```powershell
 PS C:\Stuff> windrop report.pdf
 # Move cursor over Discord, Chrome, VS Code, Explorer, Slack, etc.
-# Press [F8] to drag -> press [F8] to drop!
+# Press [F8] to drag -> press [F8] or left-click to drop!
 Drop completed (Copy).
 ```
 
@@ -22,9 +22,17 @@ Drop completed (Copy).
 ### 1. The Command
 ```powershell
 windrop <files...>
+windrop --version | -v
+windrop --help | -h
 ```
 
 ```powershell
+# Check version
+windrop --version
+
+# View help
+windrop --help
+
 # Single file
 windrop photo.png
 
@@ -39,7 +47,7 @@ windrop *.jpg "C:\My Documents\report.xlsx"
 
 | Action | How to Trigger |
 | :--- | :--- |
-| **Keyboard Drag & Drop** | Hover cursor over target window and press **`F8`** to drag &rarr; press **`F8`** again to drop |
+| **Keyboard Drag & Drop** | Hover cursor over target window and press **`F8`** to drag &rarr; press **`F8`** or left-click to drop |
 | **Mouse Drag & Drop** | Grab and drag the floating card widget directly into any window |
 | **Dismiss / Cancel** | Press **`Escape`** or **Right-Click** the card anytime |
 
@@ -48,7 +56,7 @@ windrop *.jpg "C:\My Documents\report.xlsx"
 ## Features
 
 - **True Standalone Binary**: Pure C++17 compiled against native Windows APIs (`ole32`, `shell32`, `user32`). Starts instantly, exits immediately after drop, uses 0 background resources.
-- **2-Step Keyboard Drag (`F8`)**: Hover over any destination window, press **`F8`** to engage drag (target lights up with visual drop cues), and press **`F8`** again to drop.
+- **2-Step Keyboard Drag (`F8`)**: Hover over any destination window, press **`F8`** to engage drag (target lights up with visual drop cues), and press **`F8`** or left-click to drop.
 - **Floating Acrylic Card**: Sleek dark card with 32x32 native shell file icon and thumbnail preview for direct mouse drags.
 - **Multi-Widget Staging**: Run `windrop` multiple times from your CLI &mdash; cards automatically cascade (`+30px` offset) across your desktop.
 - **Multi-Format Shell Payload**:

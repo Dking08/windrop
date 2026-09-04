@@ -158,24 +158,37 @@ std::vector<std::wstring> ParseCommandLine(const wchar_t* cmdLine)
 }
 
 // ---------------------------------------------------------------------------
+// PrintVersion
+// ---------------------------------------------------------------------------
+void PrintVersion()
+{
+    wprintf(L"windrop %s\n", kVersion);
+}
+
+// ---------------------------------------------------------------------------
 // PrintUsage
 // ---------------------------------------------------------------------------
-void PrintUsage()
+void PrintUsage(FILE* out)
 {
-    fwprintf(stderr,
-        L"windrop - CLI Windows Drag-and-Drop Utility (dragon/blobdrop for Windows)\n\n"
+    fwprintf(out,
+        L"windrop - CLI Windows Drag-and-Drop Utility\n\n"
         L"Usage:\n"
-        L"  windrop <files...>\n\n"
+        L"  windrop <files...>\n"
+        L"  windrop -v | --version\n"
+        L"  windrop -h | --help\n\n"
+        L"Options:\n"
+        L"  -v, --version    Show version information\n"
+        L"  -h, --help       Show this help message\n\n"
+        L"Controls:\n"
+        L"  - Hover over target window and press [F8] to drag -> press [F8] or left-click to drop\n"
+        L"  - Grab & drag the floating card directly into any window\n"
+        L"  - Press [Esc] or right-click on card to dismiss\n\n"
         L"Examples:\n"
         L"  windrop a.txt\n"
         L"  windrop *.png\n"
         L"  windrop file1.pdf file2.png\n"
         L"  windrop \"my report.docx\"\n"
-        L"  windrop C:\\Users\\me\\Desktop\\photo.jpg\n\n"
-        L"Controls:\n"
-        L"  - Hover over target window and press [F8] to drag -> press [F8] to drop\n"
-        L"  - Grab & drag the floating card directly into any window\n"
-        L"  - Press [Esc] or Right-Click to dismiss\n");
+        L"  windrop C:\\Users\\me\\Desktop\\photo.jpg\n");
 }
 
 // ---------------------------------------------------------------------------
