@@ -64,16 +64,24 @@ target_compile_definitions(windrop PRIVATE
 # ──────────────────────────────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(windrop PRIVATE
-        /W4         # High warning level
-        /WX         # Warnings as errors (strict)
+        /W4          # High warning level
+        /WX          # Warnings as errors (strict)
         /permissive- # Conformance mode
-        /utf-8      # Source and execution charset
-        /MP         # Multi-processor compilation
+        /utf-8       # Source and execution charset
+        /MP          # Multi-processor compilation
+        /experimental:deterministic # Reproducible object code
     )
 
     # Enable /LTCG (Link-Time Code Generation) for Release builds
     set_target_properties(windrop PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+
+    # Deterministic linker flags for reproducible PE binary
+    target_link_options(windrop PRIVATE
+        /Brepro            # Deterministic PE timestamp and checksum
+        /PDBALTPATH:%_PDB% # Avoid embedding absolute path to PDB
+        /INCREMENTAL:NO    # Disable incremental linking
     )
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(windrop PRIVATE
