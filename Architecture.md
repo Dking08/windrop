@@ -27,7 +27,8 @@ windrop/
    ├─► Utils::ResolvePaths expands globs and verifies file existence
    ├─► OleInitialize() initializes COM Single-Threaded Apartment (STA)
    ├─► CDataObject builds multi-format payload (HDROP, text, URL, effects)
-   ├─► CDropSource initializes atomic drop/cancel flags
+   ├─► CDropSource initializes drop/cancel volatile flags
+   ├─► HotkeyThread starts and registers F8/Esc via RegisterHotKey(MOD_NOREPEAT)
    └─► Creates top-level floating card widget with 32x32 shell icon
    │
 2. Drag Execution
@@ -47,3 +48,24 @@ windrop/
    ├─► Target window executes IDropTarget::Drop() and ingests payload
    └─► windrop.exe outputs "Drop completed (Copy)." and exits with code 0
 ```
+
+---
+
+## Hotkey Architecture (Keylogger-Free & Safe)
+
+Earlier versions relied on low-level keyboard hooks (`SetWindowsHookExW(WH_KEYBOARD_LL)`), which heuristic antivirus scanners (including Windows Defender) often falsely flag as keylogger behavior.
+
+Starting with **v2.1.0**, `windrop` uses official Win32 `RegisterHotKey`:
+- **Dedicated Worker Thread (`HotkeyThread`)**: `DoDragDrop` runs an internal modal message loop that selectively filters out `WM_HOTKEY` (`0x0312`). To avoid message starvation during active drag, hotkeys are registered and pumped on a dedicated worker thread with an uninhibited message queue.
+- **`MOD_NOREPEAT` Protection**: Prevents OS autorepeat while a key is physically held down, ensuring clean 2-step transitions (1st `F8` engage &rarr; 2nd `F8` drop).
+- **Multi-Card Cascade Hand-off**: When multiple cards are staged, `WM_CLAIM_HOTKEY` dynamically re-routes hotkey ownership to the topmost card.
+
+---
+
+## Reproducible Builds
+
+`windrop` is configured with deterministic MSVC flags in `CMakeLists.txt`:
+- `/experimental:deterministic`: Emits reproducible object files.
+- `/Brepro`: Emits deterministic PE timestamps and checksums.
+- `/PDBALTPATH:%_PDB%`: Prevents leaking local user paths into debug headers.
+- `/INCREMENTAL:NO`: Guarantees bit-for-bit identical binary hashes across clean builds.

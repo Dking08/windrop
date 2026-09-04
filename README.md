@@ -63,6 +63,7 @@ windrop *.jpg "C:\My Documents\report.xlsx"
 ## Features
 
 - **True Standalone Binary**: Pure C++17 compiled against native Windows APIs (`ole32`, `shell32`, `user32`). Starts instantly, exits immediately after drop, uses 0 background resources.
+- **No internet access**, not even sockets/network libs anywhere in `CMakeLists.txt` or source.
 - **2-Step Keyboard Drag (`F8`)**: Hover over any destination window, press **`F8`** to engage drag (target lights up with visual drop cues), and press **`F8`** or left-click to drop.
 - **Floating Acrylic Card**: Sleek dark card with 32x32 native shell file icon and thumbnail preview for direct mouse drags.
 - **Multi-Widget Staging**: Run `windrop` multiple times from your CLI &mdash; cards automatically cascade (`+30px` offset) across your desktop.
@@ -71,6 +72,8 @@ windrop *.jpg "C:\My Documents\report.xlsx"
   - `CFSTR_PREFERREDDROPEFFECT`: Explicit copy / move negotiation.
   - `CF_UNICODETEXT` & `CF_TEXT`: Newline-separated file paths for text editors, IDEs, and terminals.
   - `CFSTR_SHELLURL`: `file:///` URLs for web browsers and Electron web applications.
+- **Safe Global Hotkey Handling (F8):**: Uses standard Win32 `RegisterHotKey` on an isolated worker message loop instead of low-level keyboard hooks (`WH_KEYBOARD_LL`), eliminating false-positive antivirus / Defender flags.
+- **Byte-for-Byte Reproducible Builds**: Configured with deterministic compiler and linker flags (`/experimental:deterministic`, `/Brepro`, `/PDBALTPATH:%_PDB%`), ensuring bit-identical binaries across builds.
 - **Per-Monitor V2 DPI Aware**: Crisp, sharp rendering on 4K and high-DPI displays.
 
 ---
