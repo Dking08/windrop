@@ -9,14 +9,14 @@
 // ----------------------------------------------------------------------------
 // CDropSource — keyboard-driven IDropSource
 //
-// Uses external volatile flags (set by a low-level keyboard hook in main.cpp)
-// to decide when to drop or cancel. MK_LBUTTON is completely ignored since
-// the drag is initiated from a CLI tool, not a physical mouse press.
+// Uses external volatile flags (set by hotkey handler in main.cpp)
+// to decide when to drop or cancel. Supports both keyboard triggers
+// and standard mouse release.
 // ----------------------------------------------------------------------------
 class CDropSource : public IDropSource
 {
 public:
-    // shouldDrop/shouldCancel are set by the LL keyboard hook in main.cpp
+    // shouldDrop/shouldCancel are set by the hotkey handler in main.cpp
     CDropSource(volatile bool* shouldDrop, volatile bool* shouldCancel);
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;
