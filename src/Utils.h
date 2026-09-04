@@ -12,7 +12,7 @@
 // ----------------------------------------------------------------------------
 namespace Utils
 {
-    inline constexpr wchar_t kVersion[] = L"2.0.1";
+    inline constexpr wchar_t kVersion[] = L"2.1.0";
 
     // -----------------------------------------------------------------------
     // ResolvePaths

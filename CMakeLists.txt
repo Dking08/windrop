@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(windrop
-    VERSION     2.0.1
+    VERSION     2.1.0
     DESCRIPTION "CLI-initiated Windows drag-and-drop utility"
     LANGUAGES   CXX
 )

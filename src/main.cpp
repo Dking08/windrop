@@ -199,7 +199,7 @@ static void StartHotkeyThread()
 {
     if (!g_hHotkeyThread)
     {
-        g_hHotkeyThread = CreateThread(nullptr, 0, HotkeyThreadProc, nullptr, 0, nullptr);
+        g_hHotkeyThread = CreateThread(nullptr, 0, HotkeyThreadProc, nullptr, 0, &g_hotkeyThreadId);
     }
 }
 
