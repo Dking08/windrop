@@ -58,6 +58,7 @@ static DWORD                g_mainThreadId = 0;
 static volatile bool        g_isDragging   = false;
 static volatile bool        g_shouldDrop   = false;
 static volatile bool        g_shouldCancel = false;
+static bool                 g_verbose      = false;
 
 // ── Helpers to find topmost Windrop window across processes ──
 struct TopWindropFinder
@@ -114,7 +115,10 @@ static void ExecuteOLEDrag(HWND hwnd)
     g_shouldDrop   = false;
     g_shouldCancel = false;
 
-    fwprintf(stderr, L"\nDragging... hover over target window and press [F8] or left-click to drop ([Esc] to cancel).\n");
+    if (g_verbose)
+        fwprintf(stderr, L"Dragging... hover over target window and press [F8] or left-click to drop ([Esc] to cancel).\n");
+    else
+        fwprintf(stderr, L"Dragging...\n");
     fflush(stderr);
 
     DWORD dwEffect = 0;
@@ -131,23 +135,23 @@ static void ExecuteOLEDrag(HWND hwnd)
     {
         if (dwEffect & DROPEFFECT_MOVE)
         {
-            wprintf(L"\nDrop completed (Move).\n");
+            wprintf(L"Drop completed (Move).\n");
             g_pState->exitCode = EXIT_OK;
         }
         else if (dwEffect & (DROPEFFECT_COPY | DROPEFFECT_LINK))
         {
-            wprintf(L"\nDrop completed (Copy).\n");
+            wprintf(L"Drop completed (Copy).\n");
             g_pState->exitCode = EXIT_OK;
         }
         else
         {
-            wprintf(L"\nDrop completed.\n");
+            wprintf(L"Drop completed.\n");
             g_pState->exitCode = EXIT_OK;
         }
     }
     else
     {
-        wprintf(L"\nDrag canceled.\n");
+        wprintf(L"Drag canceled.\n");
         g_pState->exitCode = EXIT_CANCELLED;
     }
 
@@ -307,7 +311,7 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
     {
         if (wp == VK_ESCAPE)
         {
-            wprintf(L"\nDrag canceled.\n");
+            wprintf(L"Drag canceled.\n");
             if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
             DestroyWindow(hwnd);
             return 0;
@@ -322,7 +326,7 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
     case WM_RBUTTONUP:
     {
-        wprintf(L"\nDrag canceled.\n");
+        wprintf(L"Drag canceled.\n");
         if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
         DestroyWindow(hwnd);
         return 0;
@@ -330,7 +334,7 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
     case WM_CLOSE:
     {
-        wprintf(L"\nDrag canceled.\n");
+        wprintf(L"Drag canceled.\n");
         if (g_pState) g_pState->exitCode = EXIT_CANCELLED;
         DestroyWindow(hwnd);
         return 0;
@@ -348,7 +352,7 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 // ── Entry point ──
 int wmain(int argc, wchar_t* argv[])
 {
-    // Handle early command-line options
+    std::vector<std::wstring> rawArgs;
     for (int i = 1; i < argc; ++i)
     {
         std::wstring arg = argv[i];
@@ -362,9 +366,15 @@ int wmain(int argc, wchar_t* argv[])
             Utils::PrintUsage(stdout);
             return EXIT_OK;
         }
+        if (arg == L"--verbose")
+        {
+            g_verbose = true;
+            continue;
+        }
+        rawArgs.emplace_back(arg);
     }
 
-    if (argc < 2) { Utils::PrintUsage(stderr); return EXIT_BAD_ARGS; }
+    if (rawArgs.empty()) { Utils::PrintUsage(stderr); return EXIT_BAD_ARGS; }
 
     g_mainThreadId = GetCurrentThreadId();
 
@@ -374,10 +384,6 @@ int wmain(int argc, wchar_t* argv[])
         GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
     if (pfnSetDpi)
         pfnSetDpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    std::vector<std::wstring> rawArgs;
-    for (int i = 1; i < argc; ++i)
-        rawArgs.emplace_back(argv[i]);
 
     std::vector<std::wstring> missing;
     std::vector<std::wstring> files = Utils::ResolvePaths(rawArgs, missing);
@@ -501,8 +507,15 @@ int wmain(int argc, wchar_t* argv[])
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
-    fwprintf(stderr, L"\nwindrop ready. Hover over target and press [F8] to drag, or drag card directly.\n");
-    fwprintf(stderr, L"Controls: Press [F8] or left-click to drop | [Esc] or right-click on card to dismiss\n\n");
+    if (g_verbose)
+    {
+        fwprintf(stderr, L"\nwindrop ready\n\n");
+        fwprintf(stderr, L"Controls:\n");
+        fwprintf(stderr, L"  - Mouse:    Drag the floating card directly into any window\n");
+        fwprintf(stderr, L"  - Keyboard: Hover over target window and press [F8] to drag -> press [F8] or left-click to drop\n");
+        fwprintf(stderr, L"  - Dismiss:  Press [Esc] or right-click on card\n\n");
+    }
+
     fwprintf(stderr, L"Payload (%zu file%s):\n", files.size(), files.size() == 1 ? L"" : L"s");
     for (const auto& f : files)
         fwprintf(stderr, L"  - %s\n", f.c_str());

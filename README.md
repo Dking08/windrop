@@ -1,10 +1,13 @@
 # windrop
 
-A lightweight CLI drag-and-drop utility for Windows (`dragon` / `blobdrop` alternative).
+A lightweight CLI drag-and-drop utility for Windows.
 
 **100% Native Win32 / OLE** &bull; **Single Standalone Binary** &bull; **Peak Working Set < 3MB** &bull; **Zero Background Bloat / Zero Services**
 
 https://github.com/user-attachments/assets/872c8631-a4ee-4f3e-ae3a-3ed750afc4c6
+
+> [!NOTE]
+> Demo video on version v2.0.0
 
 `windrop` lets you initiate native Windows drag-and-drop operations directly from your terminal or scripts without running background daemons or heavy electron wrappers.
 
@@ -22,6 +25,7 @@ Drop completed (Copy).
 ### 1. The Command
 ```powershell
 windrop <files...>
+windrop --verbose <files...>
 windrop --version | -v
 windrop --help | -h
 ```
@@ -32,6 +36,9 @@ windrop --version
 
 # View help
 windrop --help
+
+# Verbose output with control instructions
+windrop --verbose photo.png
 
 # Single file
 windrop photo.png
