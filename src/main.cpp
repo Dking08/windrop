@@ -39,6 +39,13 @@ static constexpr int EXIT_COM_ERROR    = 4;
 static const wchar_t* kCardClassName = L"WindropPayloadCardWnd";
 
 #define WM_START_F8_DRAG (WM_APP + 1)
+#define WM_CLAIM_HOTKEY  (WM_APP + 2)
+
+static constexpr int kHotkeyF8  = 1;
+static constexpr int kHotkeyEsc = 2;
+
+#define WM_HOTKEY_CMD_REGISTER   (WM_USER + 10)
+#define WM_HOTKEY_CMD_UNREGISTER (WM_USER + 11)
 
 struct WindropPayloadState
 {
@@ -52,13 +59,14 @@ struct WindropPayloadState
     HWND                      hwndCard    = nullptr;
 };
 
-static WindropPayloadState* g_pState       = nullptr;
-static HHOOK                g_hHook        = nullptr;
-static DWORD                g_mainThreadId = 0;
-static volatile bool        g_isDragging   = false;
-static volatile bool        g_shouldDrop   = false;
-static volatile bool        g_shouldCancel = false;
-static bool                 g_verbose      = false;
+static WindropPayloadState* g_pState         = nullptr;
+static DWORD                g_mainThreadId   = 0;
+static DWORD                g_hotkeyThreadId = 0;
+static HANDLE               g_hHotkeyThread  = nullptr;
+static volatile bool        g_isDragging     = false;
+static volatile bool        g_shouldDrop     = false;
+static volatile bool        g_shouldCancel   = false;
+static bool                 g_verbose        = false;
 
 // ── Helpers to find topmost Windrop window across processes ──
 struct TopWindropFinder
@@ -102,6 +110,116 @@ static void WakeupDragLoop()
     inputs[1].mi.dwFlags = MOUSEEVENTF_MOVE;
     inputs[1].mi.dx = -1;
     SendInput(2, inputs, sizeof(INPUT));
+}
+
+// ── Dedicated background thread for global hotkeys ──
+// Runs its own message pump so hotkeys are never blocked by DoDragDrop's internal loop
+static DWORD WINAPI HotkeyThreadProc(LPVOID)
+{
+    g_hotkeyThreadId = GetCurrentThreadId();
+
+    auto doRegister = []() {
+        RegisterHotKey(nullptr, kHotkeyF8, MOD_NOREPEAT, VK_F8);
+        RegisterHotKey(nullptr, kHotkeyEsc, MOD_NOREPEAT, VK_ESCAPE);
+    };
+
+    auto doUnregister = []() {
+        UnregisterHotKey(nullptr, kHotkeyF8);
+        UnregisterHotKey(nullptr, kHotkeyEsc);
+    };
+
+    doRegister();
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        if (msg.message == WM_HOTKEY)
+        {
+            if (msg.wParam == kHotkeyF8)
+            {
+                if (!g_isDragging)
+                {
+                    // Phase 1: User pressed F8 to engage drag at current cursor position
+                    HWND targetWnd = GetTopmostWindropWindow();
+                    if (targetWnd)
+                    {
+                        if (g_pState && targetWnd != g_pState->hwndCard)
+                        {
+                            doUnregister();
+                            PostMessageW(targetWnd, WM_CLAIM_HOTKEY, 0, 0);
+                        }
+                        PostMessageW(targetWnd, WM_START_F8_DRAG, 0, 0);
+                    }
+                }
+                else
+                {
+                    // Phase 2: User pressed F8 to drop!
+                    g_shouldDrop = true;
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    WakeupDragLoop();
+                }
+            }
+            else if (msg.wParam == kHotkeyEsc)
+            {
+                if (!g_isDragging)
+                {
+                    HWND targetWnd = GetTopmostWindropWindow();
+                    if (targetWnd)
+                    {
+                        PostMessageW(targetWnd, WM_CLOSE, 0, 0);
+                    }
+                }
+                else
+                {
+                    g_shouldCancel = true;
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                    WakeupDragLoop();
+                }
+            }
+        }
+        else if (msg.message == WM_HOTKEY_CMD_REGISTER)
+        {
+            doRegister();
+        }
+        else if (msg.message == WM_HOTKEY_CMD_UNREGISTER)
+        {
+            doUnregister();
+        }
+        else if (msg.message == WM_QUIT)
+        {
+            break;
+        }
+    }
+
+    doUnregister();
+    return 0;
+}
+
+static void StartHotkeyThread()
+{
+    if (!g_hHotkeyThread)
+    {
+        g_hHotkeyThread = CreateThread(nullptr, 0, HotkeyThreadProc, nullptr, 0, nullptr);
+    }
+}
+
+static void StopHotkeyThread()
+{
+    if (g_hHotkeyThread)
+    {
+        if (g_hotkeyThreadId)
+            PostThreadMessageW(g_hotkeyThreadId, WM_QUIT, 0, 0);
+        WaitForSingleObject(g_hHotkeyThread, 1000);
+        CloseHandle(g_hHotkeyThread);
+        g_hHotkeyThread = nullptr;
+        g_hotkeyThreadId = 0;
+    }
+}
+
+static void ClaimHotkeys()
+{
+    if (g_hotkeyThreadId)
+        PostThreadMessageW(g_hotkeyThreadId, WM_HOTKEY_CMD_REGISTER, 0, 0);
 }
 
 // ── Core OLE Drag Execution ──
@@ -158,57 +276,6 @@ static void ExecuteOLEDrag(HWND hwnd)
     DestroyWindow(hwnd);
 }
 
-// ── Global Low-Level Keyboard Hook for F8 & Escape ──
-static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
-{
-    if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
-    {
-        auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-
-        if (kb->vkCode == VK_F8)
-        {
-            if (!g_isDragging)
-            {
-                // Phase 1: User pressed F8 to engage drag at current cursor position
-                HWND targetWnd = GetTopmostWindropWindow();
-                if (targetWnd)
-                {
-                    PostMessageW(targetWnd, WM_START_F8_DRAG, 0, 0);
-                    return 1; // swallow F8
-                }
-            }
-            else
-            {
-                // Phase 2: User pressed F8 to drop!
-                g_shouldDrop = true;
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                WakeupDragLoop();
-                return 1; // swallow F8
-            }
-        }
-        else if (kb->vkCode == VK_ESCAPE)
-        {
-            if (!g_isDragging)
-            {
-                HWND targetWnd = GetTopmostWindropWindow();
-                if (targetWnd)
-                {
-                    PostMessageW(targetWnd, WM_CLOSE, 0, 0);
-                    return 1; // swallow Escape
-                }
-            }
-            else
-            {
-                g_shouldCancel = true;
-                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
-                WakeupDragLoop();
-                return 1; // swallow Escape
-            }
-        }
-    }
-    return CallNextHookEx(nullptr, nCode, wParam, lParam);
-}
-
 // ── Window Procedure for the visual Card ──
 static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -221,6 +288,12 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
         // 2. Synthesize left mouse down to initialize genuine MK_LBUTTON OLE drag state
         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        return 0;
+    }
+
+    if (msg == WM_CLAIM_HOTKEY)
+    {
+        ClaimHotkeys();
         return 0;
     }
 
@@ -342,6 +415,12 @@ static LRESULT CALLBACK WindropCardWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
     case WM_DESTROY:
     {
+        StopHotkeyThread();
+        HWND nextWnd = GetTopmostWindropWindow();
+        if (nextWnd && nextWnd != hwnd)
+        {
+            PostMessageW(nextWnd, WM_CLAIM_HOTKEY, 0, 0);
+        }
         PostQuitMessage(0);
         return 0;
     }
@@ -501,8 +580,8 @@ int wmain(int argc, wchar_t* argv[])
     // Attach Shell Drag Image to card for direct mouse drags
     DragImage::AttachShellImage(hwnd, files, state.pDataObj);
 
-    // Install global low-level keyboard hook for F8 and Escape
-    g_hHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInst, 0);
+    // Start dedicated hotkey thread for F8 and Escape (safe alternative to low-level keyboard hooks)
+    StartHotkeyThread();
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
@@ -530,11 +609,7 @@ int wmain(int argc, wchar_t* argv[])
         DispatchMessageW(&msg);
     }
 
-    if (g_hHook)
-    {
-        UnhookWindowsHookEx(g_hHook);
-        g_hHook = nullptr;
-    }
+    StopHotkeyThread();
 
     if (state.hIcon)
         DestroyIcon(state.hIcon);
