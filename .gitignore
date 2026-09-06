@@ -1,6 +1,13 @@
 build/
 misc-visitors/
+
+
+# ---- Dists ----
 manifests/
+windrop-choco/
+
+
+# ---- Files ----
 *.exe
 bcmd.ps1
 checksums.txt
