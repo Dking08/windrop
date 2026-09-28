@@ -65,7 +65,7 @@ windrop *.jpg "C:\My Documents\report.xlsx"
 - **True Standalone Binary**: Pure C++17 compiled against native Windows APIs (`ole32`, `shell32`, `user32`). Starts instantly, exits immediately after drop, uses 0 background resources.
 - **No internet access**, not even sockets/network libs anywhere in `CMakeLists.txt` or source.
 - **2-Step Keyboard Drag (`F8`)**: Hover over any destination window, press **`F8`** to engage drag (target lights up with visual drop cues), and press **`F8`** or left-click to drop.
-- **Floating Acrylic Card**: Sleek dark card with 32x32 native shell file icon and thumbnail preview for direct mouse drags.
+- **Floating Acrylic Card**: Sleek dark card with 32x32 native shell file icon for direct mouse drags.
 - **Multi-Widget Staging**: Run `windrop` multiple times from your CLI &mdash; cards automatically cascade (`+30px` offset) across your desktop.
 - **Multi-Format Shell Payload**:
   - `CF_HDROP`: Native shell file lists for File Explorer, 7-Zip, Discord, Slack.
@@ -117,6 +117,10 @@ build/Release/windrop.exe
 For internal architecture, COM data object implementation, and state machine diagrams, see **[Architecture.md](Architecture.md)**.
 
 ---
+
+## Privacy & Security Policies
+
+[Windrop Privacy Policy](PRIVACY.md) and [Security Policy](SECURITY.md).
 
 ## License
 
